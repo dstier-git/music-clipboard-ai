@@ -383,7 +383,7 @@ class MuseScoreExtractorApp:
         self.watching = False
         self.watch_thread = None
         self.processed_files = set()
-        self.output_format = tk.StringVar(value="text")
+        self.output_format = tk.StringVar(value="Text")
         self.last_extracted_file = None
         self.delete_previous_var = tk.BooleanVar(value=True)
         self.preferences = self.load_preferences()
@@ -471,12 +471,22 @@ class MuseScoreExtractorApp:
         format_frame = ttk.Frame(file_frame)
         format_frame.grid(row=1, column=0, columnspan=4, sticky=tk.W, pady=(10, 0))
         ttk.Label(format_frame, text="Output Format:").grid(row=0, column=0, padx=5)
-        ttk.Radiobutton(format_frame, text="Text", variable=self.output_format, value="text").grid(
-            row=0, column=1, padx=5
+        format_dropdown = ttk.Combobox(
+            format_frame,
+            textvariable=self.output_format,
+            values=["Text", "MIDI"],
+            state="readonly",
         )
-        ttk.Radiobutton(format_frame, text="MIDI", variable=self.output_format, value="midi").grid(
-            row=0, column=2, padx=5
-        )
+        format_dropdown.current(0)
+        format_dropdown.grid(row=0, column=1, padx=5)
+
+        # Replace with buttons instead:
+            # ttk.Radiobutton(format_frame, text="Text", variable=self.output_format, value="text").grid(
+            #     row=0, column=1, padx=5
+            # )
+            # ttk.Radiobutton(format_frame, text="MIDI", variable=self.output_format, value="midi").grid(
+            #     row=0, column=2, padx=5
+            # )
 
         watch_frame = ttk.LabelFrame(main_frame, text="Auto-Process Saved Selections", padding="10")
         watch_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=5)
@@ -678,8 +688,8 @@ Instructions:
         thread.start()
 
     def _extract_thread(self, file_path):
-        output_format = self.output_format.get()
-
+        output_format = self.output_format.get().strip().lower()
+ 
         self.log(f"\n{'=' * 60}")
         self.log(f"Processing: {os.path.basename(file_path)}")
         self.log(f"Output format: {output_format.upper()}")
