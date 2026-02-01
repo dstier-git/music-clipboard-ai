@@ -11,9 +11,15 @@ if __package__ is None or __package__ == "":
 from app.platform_utils import IS_MACOS, IS_WINDOWS, default_hotkey
 
 try:
-    import keyboard
+    if IS_MACOS:
+        from pynput import keyboard as pynput_keyboard
+        keyboard = None
+    else:
+        import keyboard
+        pynput_keyboard = None
 except ImportError:
     keyboard = None
+    pynput_keyboard = None
 
 try:
     import psutil
@@ -83,11 +89,18 @@ def _on_hotkey():
 
 
 def main():
-    if keyboard is None:
-        raise SystemExit(
-            "The 'keyboard' library is required to run hotkey_listener.py. "
-            "Install it with: pip install keyboard"
-        )
+    if IS_MACOS:
+        if pynput_keyboard is None:
+            raise SystemExit(
+                "The 'pynput' library is required to run hotkey_listener.py on macOS. "
+                "Install it with: pip install pynput"
+            )
+    else:
+        if keyboard is None:
+            raise SystemExit(
+                "The 'keyboard' library is required to run hotkey_listener.py. "
+                "Install it with: pip install keyboard"
+            )
 
     if psutil is None:
         print(
@@ -100,11 +113,21 @@ def main():
     except Exception:
         pass
 
-    keyboard.add_hotkey(HOTKEY, _on_hotkey)
     display_hotkey = HOTKEY.replace("cmd", "Cmd").replace("ctrl", "Ctrl").replace("alt", "Alt")
     print(f"Listening for {display_hotkey} -> launches {APP_SCRIPT.name}")
 
-    keyboard.wait()
+    if IS_MACOS:
+        pynput_hotkey = (
+            HOTKEY.replace("cmd", "<cmd>")
+            .replace("ctrl", "<ctrl>")
+            .replace("alt", "<alt>")
+            .replace("shift", "<shift>")
+        )
+        with pynput_keyboard.GlobalHotKeys({pynput_hotkey: _on_hotkey}) as listener:
+            listener.join()
+    else:
+        keyboard.add_hotkey(HOTKEY, _on_hotkey)
+        keyboard.wait()
 
 
 if __name__ == "__main__":

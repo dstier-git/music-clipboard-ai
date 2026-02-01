@@ -1,5 +1,6 @@
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -40,6 +41,17 @@ try:
     KEYBOARD_AVAILABLE = True
 except ImportError:
     KEYBOARD_AVAILABLE = False
+
+if IS_MACOS:
+    try:
+        from pynput import keyboard as pynput_keyboard
+        PYNPUT_AVAILABLE = True
+    except ImportError:
+        pynput_keyboard = None
+        PYNPUT_AVAILABLE = False
+else:
+    pynput_keyboard = None
+    PYNPUT_AVAILABLE = False
 
 try:
     import psutil
@@ -383,12 +395,14 @@ class MuseScoreExtractorApp:
         self.watching = False
         self.watch_thread = None
         self.processed_files = set()
+        self.seen_output_type_files = set()
         self.output_format = tk.StringVar(value="Text")
         self.last_extracted_file = None
         self.delete_previous_var = tk.BooleanVar(value=True)
         self.preferences = self.load_preferences()
         self._hotkey_monitor_stop = threading.Event()
         self._last_hotkey_request = 0
+        self._pynput_listener = None
 
         self.create_widgets()
         self.apply_saved_preferences()
@@ -507,7 +521,8 @@ class MuseScoreExtractorApp:
         )
         self.save_selection_button.grid(row=0, column=0, padx=5)
 
-        if KEYBOARD_AVAILABLE:
+        hotkey_available = (IS_MACOS and PYNPUT_AVAILABLE) or (not IS_MACOS and KEYBOARD_AVAILABLE)
+        if hotkey_available:
             hotkey_label = ttk.Label(
                 automation_frame,
                 text=(
@@ -519,9 +534,10 @@ class MuseScoreExtractorApp:
             )
             hotkey_label.grid(row=0, column=1, padx=10)
         else:
+            install_hint = "pip install pynput" if IS_MACOS else "pip install keyboard"
             hotkey_label = ttk.Label(
                 automation_frame,
-                text="(Install 'keyboard' for global hotkey: pip install keyboard)",
+                text=f"(Install '{'pynput' if IS_MACOS else 'keyboard'}' for global hotkey: {install_hint})",
                 foreground="gray",
                 font=("Arial", 8),
             )
@@ -563,17 +579,10 @@ Instructions:
    - Select a .mscx or .mscz file
    - Click 'Extract' to process
 2. Auto Mode (Save Selection):
-   - Set the watch folder (where MuseScore saves selections)
-   - Click 'Start Watching' to begin monitoring
+   - Set the watch folder (where MuseScore saves selections), click 'Start Watching'
    - In MuseScore: Select the measures you want to extract
    - Click 'Trigger Save Selection in MuseScore' button (or manually: File > Save Selection)
-   - In the save dialog that opens:
-     - Choose the save location (preferably the watch folder)
-     - Enter a filename
-     - Click Save
-   - The app will automatically process the new file if watching is enabled
-   - Note: Saved selections already contain only selected measures
-   - If the dialog didn't open, check the output log for details
+   - Save in the watch folder
    - Shortcut reminder: {SAVE_SELECTION_SHORTCUT_LABEL}
         """
         ttk.Label(watch_frame, text=instructions.strip(), justify=tk.LEFT, foreground="gray").grid(
@@ -629,6 +638,64 @@ Instructions:
 
     def clear_output(self):
         self.output_text.delete(1.0, tk.END)
+
+    def _reveal_file_in_folder(self, file_path):
+        """Reveal a file in the system file manager (Finder/Explorer) without changing app state."""
+        if not file_path or not os.path.exists(file_path):
+            return
+        try:
+            if IS_MACOS:
+                subprocess.run(["open", "-R", file_path])
+            elif IS_WINDOWS:
+                subprocess.run(["explorer", "/select,", os.path.normpath(file_path)])
+            else:
+                subprocess.run(["xdg-open", os.path.dirname(file_path)])
+        except Exception:
+            try:
+                folder = os.path.dirname(file_path)
+                if IS_WINDOWS:
+                    os.startfile(folder)
+                else:
+                    subprocess.run(["open" if IS_MACOS else "xdg-open", folder])
+            except Exception:
+                pass
+
+    def _bring_app_to_front(self):
+        """Raise and focus the app window."""
+        def do_bring():
+            try:
+                self.root.attributes("-topmost", True)
+                self.root.lift()
+                self.root.focus_force()
+                self.root.attributes("-topmost", False)
+            except Exception:
+                pass
+
+        self.root.after(0, do_bring)
+
+    def _move_to_output_dir(self, src_path, output_ext):
+        """
+        Move a file into the app's output directory for the selected format.
+        Returns the destination path on success, None on failure.
+        Uses unique naming (e.g. "name (1).txt") if the destination already exists.
+        """
+        if not src_path or not os.path.exists(src_path):
+            return None
+        dest_dir = Path(MIDI_OUTPUT_DIR) if output_ext == ".mid" else Path(OUTPUT_DIR)
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            name = os.path.basename(src_path)
+            dest_path = dest_dir / name
+            if dest_path.exists():
+                stem, ext = os.path.splitext(name)
+                n = 1
+                while (dest_dir / f"{stem} ({n}){ext}").exists():
+                    n += 1
+                dest_path = dest_dir / f"{stem} ({n}){ext}"
+            shutil.move(src_path, dest_path)
+            return str(dest_path)
+        except Exception:
+            return None
 
     def open_file_location(self):
         if self.last_extracted_file and os.path.exists(self.last_extracted_file):
@@ -803,6 +870,20 @@ Instructions:
 
         self.processed_files.update(initial_files)
 
+        output_ext = None
+        try:
+            fmt = (self.output_format.get() or "").strip().lower()
+            output_ext = ".mid" if fmt == "midi" else ".txt"
+        except Exception:
+            output_ext = ".txt"
+
+        initial_output_files = set()
+        for file in os.listdir(folder):
+            if file.endswith(output_ext):
+                full_path = os.path.join(folder, file)
+                initial_output_files.add(full_path)
+        self.seen_output_type_files.update(initial_output_files)
+
         while self.watching:
             try:
                 current_files = set()
@@ -824,6 +905,29 @@ Instructions:
                                 pass
 
                 self.processed_files.intersection_update(current_files)
+
+                try:
+                    fmt = (self.output_format.get() or "").strip().lower()
+                    output_ext = ".mid" if fmt == "midi" else ".txt"
+                except Exception:
+                    output_ext = ".txt"
+
+                current_output_files = set()
+                for file in os.listdir(folder):
+                    if file.endswith(output_ext):
+                        full_path = os.path.join(folder, file)
+                        current_output_files.add(full_path)
+                        if full_path not in self.seen_output_type_files:
+                            dest_path = self._move_to_output_dir(full_path, output_ext)
+                            self.seen_output_type_files.add(full_path)
+                            self.root.after(0, self._bring_app_to_front)
+                            if dest_path:
+                                self.root.after(0, lambda p=dest_path: self._reveal_file_in_folder(p))
+                                self.log(f"Moved {os.path.basename(full_path)} to output folder: {dest_path}")
+                            else:
+                                self.log(f"Failed to move {os.path.basename(full_path)} to output folder")
+
+                self.seen_output_type_files.intersection_update(current_output_files)
                 time.sleep(1)
 
             except Exception as e:
@@ -1266,11 +1370,45 @@ Instructions:
                 f"Global hotkey registration skipped (external listener handles {_format_hotkey_label(GLOBAL_HOTKEY)})."
             )
             return
+
+        hotkey = GLOBAL_HOTKEY
+
+        if IS_MACOS:
+            if not PYNPUT_AVAILABLE:
+                self.log("Global hotkey not available: Install 'pynput' library (pip install pynput)")
+                return
+            pynput_hotkey = (
+                hotkey.replace("cmd", "<cmd>")
+                .replace("ctrl", "<ctrl>")
+                .replace("alt", "<alt>")
+                .replace("shift", "<shift>")
+            )
+
+            def on_activate():
+                self.root.after(0, self.trigger_save_selection)
+
+            def run_pynput_listener():
+                with pynput_keyboard.GlobalHotKeys({pynput_hotkey: on_activate}) as listener:
+                    self._pynput_listener = listener
+                    listener.join()
+
+            try:
+                thread = threading.Thread(target=run_pynput_listener, daemon=True)
+                thread.start()
+                self.log(f"OK: Global hotkey registered: {_format_hotkey_label(hotkey)}")
+                self.log("  You can now press the hotkey from anywhere to trigger Save Selection!")
+            except Exception as e:
+                self.log(f"Error: Failed to register global hotkey: {str(e)}")
+                messagebox.showwarning(
+                    "Hotkey Registration Failed",
+                    f"Could not register global hotkey:\n{str(e)}\n\n"
+                    "You can still use the button in the app.",
+                )
+            return
+
         if not KEYBOARD_AVAILABLE:
             self.log("Global hotkey not available: Install 'keyboard' library (pip install keyboard)")
             return
-
-        hotkey = GLOBAL_HOTKEY
 
         try:
             keyboard.add_hotkey(hotkey, self.trigger_save_selection, suppress=False)
@@ -1285,7 +1423,12 @@ Instructions:
             )
 
     def on_closing(self):
-        if KEYBOARD_AVAILABLE:
+        if IS_MACOS and self._pynput_listener is not None:
+            try:
+                self._pynput_listener.stop()
+            except Exception:
+                pass
+        elif not IS_MACOS and KEYBOARD_AVAILABLE:
             try:
                 keyboard.unhook_all_hotkeys()
             except Exception:
