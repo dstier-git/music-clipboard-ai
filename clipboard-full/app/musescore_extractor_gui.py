@@ -9,7 +9,7 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -405,6 +405,9 @@ class MuseScoreExtractorApp:
         self._hotkey_monitor_stop = threading.Event()
         self._last_hotkey_request = 0
         self._pynput_listener = None
+        self._last_accepted_watch_event_ts = None
+        self._watch_gate_lock = threading.Lock()
+        self._ai_flow_lock = threading.Lock()
 
         self.create_widgets()
         self.apply_saved_preferences()
@@ -753,6 +756,160 @@ Instructions:
         self.root.after(0, lambda: self.open_location_button.config(state="normal"))
         self.root.after(0, self.open_file_location)
 
+    def _show_error_async(self, title, message):
+        self.root.after(0, lambda: messagebox.showerror(title, message))
+
+    def _should_accept_new_file(self, now_monotonic):
+        with self._watch_gate_lock:
+            last = self._last_accepted_watch_event_ts
+            if last is not None and now_monotonic - last < 60.0:
+                return False
+            self._last_accepted_watch_event_ts = now_monotonic
+            return True
+
+    def _is_claude_running_macos(self):
+        if not IS_MACOS:
+            return False
+
+        script = """
+        tell application "System Events"
+            try
+                set _ to first process whose name is "Claude"
+                return true
+            on error
+                return false
+            end try
+        end tell
+        """
+        success, output, _ = run_applescript(script)
+        if success and output.strip().lower() == "true":
+            return True
+
+        if PSUTIL_AVAILABLE:
+            try:
+                for proc in psutil.process_iter(["name"]):
+                    try:
+                        name = (proc.info.get("name") or "").lower()
+                        if name == "claude" or "claude" in name:
+                            return True
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                        continue
+            except Exception:
+                pass
+        return False
+
+    def _open_file_in_musescore(self, file_path):
+        if not IS_MACOS:
+            return False, "MuseScore open automation is only supported on macOS for this flow."
+        try:
+            result = subprocess.run(
+                ["open", "-a", "MuseScore 4", file_path],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                err = result.stderr.strip() or result.stdout.strip() or "Unknown error opening MuseScore 4."
+                return False, err
+            return True, ""
+        except Exception as exc:
+            return False, str(exc)
+
+    def _send_prompt_to_claude(self, prompt_text):
+        if not IS_MACOS:
+            return False, "Claude automation is only supported on macOS for this flow."
+
+        full_prompt = f"Connect to musescore and {prompt_text.strip()}"
+
+        try:
+            subprocess.run(["pbcopy"], input=full_prompt, text=True, check=True)
+        except Exception as exc:
+            return False, f"Failed to set clipboard text: {exc}"
+
+        script = """
+        tell application "System Events"
+            try
+                set claudeProcess to first process whose name is "Claude"
+            on error
+                error "Claude is not running."
+            end try
+            set frontmost of claudeProcess to true
+            delay 0.2
+            keystroke "v" using {command down}
+            delay 0.1
+            key code 36
+        end tell
+        """
+        success, _, error = run_applescript(script)
+        if not success:
+            return False, error or "Failed to send prompt to Claude."
+
+        return True, ""
+
+    def _run_ai_edit_flow(self, file_path, prompt_text):
+        with self._ai_flow_lock:
+            if not IS_MACOS:
+                return
+
+            if not self._is_claude_running_macos():
+                error_msg = (
+                    "Claude must already be running before this flow can open MuseScore 4.\n\n"
+                    "Please open Claude Desktop and try with the next detected file."
+                )
+                self.log(f"Error: {error_msg}")
+                self._show_error_async("Claude Not Running", error_msg)
+                return
+
+            opened, open_error = self._open_file_in_musescore(file_path)
+            if not opened:
+                error_msg = (
+                    f"Failed to open MuseScore 4 for file:\n{file_path}\n\n"
+                    f"Details: {open_error}\n\nClaude send was canceled."
+                )
+                self.log(f"Error: {error_msg}")
+                self._show_error_async("MuseScore Open Failed", error_msg)
+                return
+
+            time.sleep(0.3)
+            sent, send_error = self._send_prompt_to_claude(prompt_text)
+            if not sent:
+                error_msg = f"Failed to send prompt to Claude: {send_error}"
+                self.log(f"Error: {error_msg}")
+                self._show_error_async("Claude Send Failed", error_msg)
+                return
+
+            self.log(f"Sent AI prompt to Claude for: {os.path.basename(file_path)}")
+
+    def handle_new_score_file(self, file_path):
+        if not file_path or not os.path.exists(file_path):
+            return
+
+        self.log(f"Detected new file: {os.path.basename(file_path)}")
+        self.extract_file(file_path)
+
+        if not IS_MACOS:
+            return
+
+        prompt = simpledialog.askstring(
+            "AI Edit Prompt",
+            (
+                f"Enter the AI edit prompt for:\n{os.path.basename(file_path)}\n\n"
+                "The app will send:\n"
+                "Connect to musescore and <your prompt>"
+            ),
+            parent=self.root,
+        )
+
+        if prompt is None or not prompt.strip():
+            self.log(f"Skipped Claude send for {os.path.basename(file_path)} (empty/canceled prompt).")
+            return
+
+        thread = threading.Thread(
+            target=self._run_ai_edit_flow,
+            args=(file_path, prompt.strip()),
+            daemon=True,
+        )
+        thread.start()
+
     def extract_file(self, file_path):
         if not file_path:
             messagebox.showwarning("Warning", "No file provided for auto-processing.")
@@ -910,8 +1067,8 @@ Instructions:
                                 mod_time = os.path.getmtime(full_path)
                                 if time.time() - mod_time > 1:
                                     self.processed_files.add(full_path)
-                                    self.root.after(0, lambda f=full_path: self.extract_file(f))
-                                    self.log(f"Detected new file: {os.path.basename(full_path)}")
+                                    if self._should_accept_new_file(time.monotonic()):
+                                        self.root.after(0, lambda f=full_path: self.handle_new_score_file(f))
                             except OSError:
                                 pass
 

@@ -36,10 +36,17 @@ A cross-platform toolkit for extracting pitch names and metric positions from Mu
 2. **Manual Mode**: Browse for a MuseScore file, then click **Extract**; output appears in the GUI and is saved under `txts/` in the repository root.
 3. **Auto Mode**:
    - Set the watch folder (default `Documents/MuseScore4/Scores`) and click **Start Watching**.
+   - For each accepted new `.mscx`/`.mscz` file, the app now:
+     - Runs the existing extraction workflow.
+     - Prompts for an AI edit instruction.
+     - Sends `Connect to musescore and ...` to Claude Desktop (auto-paste + Enter), then lets Claude MCP execute.
    - In MuseScore, select measures and:
      - Click **Trigger Save Selection in MuseScore** in the app (requires `pyautogui`).
      - Or save selection manually via **File > Save Selection** (`Shift+Cmd+S`).
    - MuseScore saves the selection to the watched folder and the app detects it automatically.
+   - Rate limit: only one new score file is processed per 60-second window. Additional score files in that window are ignored with no action.
+   - Claude requirement: Claude Desktop must already be running before MuseScore is opened for AI automation.
+   - If opening MuseScore 4 fails, the app shows an error and cancels Claude sending for that file.
 4. macOS automation relies on AppleScript; grant accessibility permissions to Terminal/Python under **System Preferences > Security & Privacy > Privacy > Accessibility** if automation buttons stay disabled.
 
 ### Windows (`WIN/`)
@@ -92,6 +99,9 @@ G4	M1:2.00	(tick: 480)
 - **Import errors**: Ensure the `app/` directory is present and the platform wrapper scripts (`MAC/` or `WIN/`) have not been moved out of the repository.
 - **No notes extracted**: Confirm the file is a valid `.mscx`/`.mscz` MuseScore file.
 - **Watch folder not detecting files**: Verify MuseScore saves selections to the configured folder.
+- **A detected file appears to be ignored**: In macOS AI auto mode, only one file is accepted every 60 seconds; later files in that window are ignored silently.
+- **"Claude Not Running"**: Open Claude Desktop first; the app will not auto-launch Claude.
+- **"MuseScore Open Failed"**: Ensure MuseScore 4 is installed as `MuseScore 4` and can be opened manually. Claude sending is canceled when this occurs.
 - **Automation buttons stay disabled**: Install the optional dependencies (`pyautogui`, `pywinauto`, `keyboard`) and grant accessibility permissions (macOS).
 - **"MuseScore Not Found"**: Start MuseScore 4 with at least one score open before triggering automation.
 - **Global hotkey issues** (Windows): Run the listener helper as Administrator if necessary, and ensure the `keyboard` library is installed.
