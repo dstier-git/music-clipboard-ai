@@ -4,11 +4,16 @@ A cross-platform music clipboard for extracting pitch names and metric positions
 
 The core idea: capture the exact musical fragment you want, then let AI help turn rough joins into transitions that feel smoother and more refined.
 
+## Acknowledgements
+
+- The MuseScore MCP integration in this codebase was originally based on [ghchen99/mcp-musescore](https://github.com/ghchen99/mcp-musescore) and has been integrated and modified as part of this repository.
+
 ## Repository layout
-- `app/` - Unified, cross-platform backend infrastructure.
-- `MAC/` - macOS wrappers and shell helpers (e.g., `run_gui.sh`).
-- `WIN/` - Windows wrappers, batch scripts, and helpers.
-- `midis/`, `txts/`, and other shared folders store extracted clipboard artifacts created by either platform.
+- `clipboard-full/app/` - Unified, cross-platform backend infrastructure.
+- `clipboard-full/app/integrations/musescore_mcp/` - Integrated MuseScore MCP module (first-party in this repo).
+- `clipboard-full/MAC/` - macOS wrappers and shell helpers (e.g., `run_gui.sh`).
+- `clipboard-full/WIN/` - Windows wrappers, batch scripts, and helpers.
+- `clipboard-full/midis/`, `clipboard-full/txts/`, and other shared folders store extracted clipboard artifacts created by either platform.
 
 ## Requirements
 1. Python 3.6 or newer.
