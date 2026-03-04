@@ -62,6 +62,8 @@ except ImportError:
 
 CONFIG_FILE = Path(os.path.expanduser("~")) / ".musescore_pitch_extractor_prefs"
 HOTKEY_REQUEST_FILE = Path(tempfile.gettempdir()) / "musescore_hotkey_request.txt"
+WATCHED_SCORE_EXTENSIONS = (".mscx", ".mscz", ".mid", ".midi")
+EXTRACTABLE_SCORE_EXTENSIONS = (".mscx", ".mscz")
 
 OUTPUT_DIR, MIDI_OUTPUT_DIR = output_dirs()
 
@@ -883,8 +885,13 @@ Instructions:
         if not file_path or not os.path.exists(file_path):
             return
 
+        extension = Path(file_path).suffix.lower()
         self.log(f"Detected new file: {os.path.basename(file_path)}")
-        self.extract_file(file_path)
+
+        if extension in EXTRACTABLE_SCORE_EXTENSIONS:
+            self.extract_file(file_path)
+        elif extension in (".mid", ".midi"):
+            self.log(f"Skipping extraction for MIDI input: {os.path.basename(file_path)}")
 
         if not IS_MACOS:
             return
@@ -1032,7 +1039,7 @@ Instructions:
     def _watch_folder(self, folder):
         initial_files = set()
         for file in os.listdir(folder):
-            if file.endswith((".mscx", ".mscz")):
+            if file.lower().endswith(WATCHED_SCORE_EXTENSIONS):
                 full_path = os.path.join(folder, file)
                 initial_files.add(full_path)
 
@@ -1048,6 +1055,8 @@ Instructions:
         initial_output_files = set()
         for file in os.listdir(folder):
             if file.endswith(output_ext):
+                if file.lower().endswith(WATCHED_SCORE_EXTENSIONS):
+                    continue
                 full_path = os.path.join(folder, file)
                 initial_output_files.add(full_path)
         self.seen_output_type_files.update(initial_output_files)
@@ -1056,7 +1065,7 @@ Instructions:
             try:
                 current_files = set()
                 for file in os.listdir(folder):
-                    if file.endswith((".mscx", ".mscz")):
+                    if file.lower().endswith(WATCHED_SCORE_EXTENSIONS):
                         full_path = os.path.join(folder, file)
                         current_files.add(full_path)
 
@@ -1083,6 +1092,8 @@ Instructions:
                 current_output_files = set()
                 for file in os.listdir(folder):
                     if file.endswith(output_ext):
+                        if file.lower().endswith(WATCHED_SCORE_EXTENSIONS):
+                            continue
                         full_path = os.path.join(folder, file)
                         current_output_files.add(full_path)
                         if full_path not in self.seen_output_type_files:

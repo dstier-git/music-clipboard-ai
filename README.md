@@ -43,6 +43,8 @@ The core idea: capture the exact musical fragment you want, then let AI help tur
      - Prompts for an AI edit instruction.
      - Sends `Connect to musescore and ...` to Claude Desktop (auto-paste + Enter), then lets Claude MCP execute.
      - Enables quick AI polishing prompts focused on smoother, cleaner transitions between phrases.
+   - MIDI watch support: new `.mid`/`.midi` files are also accepted and opened in MuseScore for the AI flow.
+     - MIDI inputs skip extraction and only run prompt -> MuseScore open -> Claude send.
    - In MuseScore, select measures and:
      - Click **Trigger Save Selection in MuseScore** in the app (requires `pyautogui`).
      - Or save selection manually via **File > Save Selection** (`Shift+Cmd+S`).
@@ -104,6 +106,7 @@ G4	M1:2.00	(tick: 480)
 - **No notes extracted**: Confirm the file is a valid `.mscx`/`.mscz` MuseScore file.
 - **Watch folder not detecting files**: Verify MuseScore saves selections to the configured folder.
 - **A detected file appears to be ignored**: In macOS AI auto mode, only one file is accepted every 60 seconds; later files in that window are ignored silently.
+- **MIDI file behavior**: `.mid`/`.midi` files are opened in MuseScore for AI flow, but extraction is skipped for MIDI inputs.
 - **"Claude Not Running"**: Open Claude Desktop first; the app will not auto-launch Claude.
 - **"MuseScore Open Failed"**: Ensure MuseScore 4 is installed as `MuseScore 4` and can be opened manually. Claude sending is canceled when this occurs.
 - **Automation buttons stay disabled**: Install the optional dependencies (`pyautogui`, `pywinauto`, `keyboard`) and grant accessibility permissions (macOS).
