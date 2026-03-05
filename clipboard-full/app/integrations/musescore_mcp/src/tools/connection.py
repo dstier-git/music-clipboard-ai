@@ -21,3 +21,16 @@ def setup_connection_tools(mcp, client: MuseScoreClient):
     async def get_score():
         """Get information about the current score."""
         return await client.send_command("getScore")
+
+    @mcp.tool()
+    async def export_score(path: str, format: str = ""):
+        """Export the current score to disk.
+
+        Args:
+            path: Absolute output path (for example /tmp/output.mid).
+            format: Optional export format override (for example mid, pdf, musicxml).
+        """
+        params = {"path": path}
+        if format and format.strip():
+            params["format"] = format.strip().lower()
+        return await client.send_command("exportScore", params)

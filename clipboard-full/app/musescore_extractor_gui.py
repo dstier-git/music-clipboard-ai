@@ -526,6 +526,8 @@ class MuseScoreExtractorApp:
         self._last_accepted_watch_event_ts = None
         self._watch_gate_lock = threading.Lock()
         self._ai_flow_lock = threading.Lock()
+        self._ai_export_lock = threading.Lock()
+        self._ai_export_in_progress = set()
 
         self.create_widgets()
         self.apply_saved_preferences()
@@ -1232,11 +1234,22 @@ class MuseScoreExtractorApp:
 
         return False, last_error
 
-    def _send_prompt_to_claude(self, prompt_text):
+    def _send_prompt_to_claude(self, prompt_text, export_midi_path=None, source_score_path=None):
         if not IS_MACOS:
             return False, "Claude automation is only supported on macOS for this flow."
 
-        full_prompt = f"Connect to musescore and {prompt_text.strip()}"
+        user_prompt = prompt_text.strip()
+        if export_midi_path and source_score_path:
+            user_prompt = (
+                f"{user_prompt}\n\n"
+                "When you are completely finished with all edits, as the final step run a local MuseScore CLI export "
+                "(do not do this early). Use execute_bash to run exactly one of these commands:\n"
+                f'"/Applications/MuseScore 4.app/Contents/MacOS/mscore" -o "{export_midi_path}" "{source_score_path}"\n'
+                f'or\n"/Applications/MuseScore 4.app/Contents/MacOS/MuseScore4" -o "{export_midi_path}" "{source_score_path}"\n'
+                "Overwrite the output file if it already exists."
+            )
+
+        full_prompt = f"Connect to musescore and {user_prompt}"
 
         try:
             subprocess.run(["pbcopy"], input=full_prompt, text=True, check=True)
@@ -1262,6 +1275,70 @@ class MuseScoreExtractorApp:
             return False, error or "Failed to send prompt to Claude."
 
         return True, ""
+
+    def _auto_export_ai_result_to_midi_thread(self, file_path, export_midi_path, baseline_mtime, prompt_sent_time=None):
+        try:
+            if prompt_sent_time is None:
+                prompt_sent_time = time.time()
+
+            deadline = prompt_sent_time + 1800.0
+            stable_since = None
+            last_state = None
+            threshold_mtime = max(float(baseline_mtime or 0), float(prompt_sent_time))
+
+            self.log(
+                "Waiting for Claude final export via MCP tool "
+                f"(up to 30 minutes): {os.path.basename(export_midi_path)}"
+            )
+
+            while time.time() < deadline:
+                if not os.path.exists(export_midi_path):
+                    time.sleep(1.0)
+                    continue
+
+                try:
+                    mtime = os.path.getmtime(export_midi_path)
+                    size = os.path.getsize(export_midi_path)
+                except OSError:
+                    time.sleep(1.0)
+                    continue
+
+                if mtime < threshold_mtime or size <= 0:
+                    time.sleep(1.0)
+                    continue
+
+                state = (mtime, size)
+                if state != last_state:
+                    last_state = state
+                    stable_since = time.time()
+                elif stable_since is not None and time.time() - stable_since >= 2.0:
+                    self.log(f"Detected Claude-exported MIDI: {export_midi_path}")
+                    self._handle_successful_extraction(export_midi_path)
+                    return
+
+                time.sleep(1.0)
+
+            self.log(
+                "AI export timed out waiting for Claude final export. "
+                f"Expected file: {export_midi_path}"
+            )
+        finally:
+            with self._ai_export_lock:
+                self._ai_export_in_progress.discard(file_path)
+
+    def _start_auto_export_ai_result_to_midi(self, file_path, export_midi_path, baseline_mtime, prompt_sent_time=None):
+        with self._ai_export_lock:
+            if file_path in self._ai_export_in_progress:
+                self.log(f"AI auto-export already in progress for: {os.path.basename(file_path)}")
+                return
+            self._ai_export_in_progress.add(file_path)
+
+        thread = threading.Thread(
+            target=self._auto_export_ai_result_to_midi_thread,
+            args=(file_path, export_midi_path, baseline_mtime, prompt_sent_time),
+            daemon=True,
+        )
+        thread.start()
 
     def _run_ai_edit_flow(self, file_path, prompt_text):
         with self._ai_flow_lock:
@@ -1298,8 +1375,22 @@ class MuseScoreExtractorApp:
                 self._show_error_async("MuseScore Plugin Start Failed", error_msg)
                 return
 
+            os.makedirs(MIDI_OUTPUT_DIR, exist_ok=True)
+            base_name = os.path.splitext(os.path.basename(file_path))[0]
+            export_midi_path = os.path.join(MIDI_OUTPUT_DIR, f"{base_name}_ai.mid")
+            baseline_mtime = 0.0
+            if os.path.exists(export_midi_path):
+                try:
+                    baseline_mtime = os.path.getmtime(export_midi_path)
+                except OSError:
+                    baseline_mtime = 0.0
+
             time.sleep(0.1)
-            sent, send_error = self._send_prompt_to_claude(prompt_text)
+            sent, send_error = self._send_prompt_to_claude(
+                prompt_text,
+                export_midi_path=export_midi_path,
+                source_score_path=file_path,
+            )
             if not sent:
                 error_msg = f"Failed to send prompt to Claude: {send_error}"
                 self.log(f"Error: {error_msg}")
@@ -1307,6 +1398,12 @@ class MuseScoreExtractorApp:
                 return
 
             self.log(f"Sent AI prompt to Claude for: {os.path.basename(file_path)}")
+            self._start_auto_export_ai_result_to_midi(
+                file_path,
+                export_midi_path=export_midi_path,
+                baseline_mtime=baseline_mtime,
+                prompt_sent_time=time.time(),
+            )
 
     def handle_new_score_file(self, file_path):
         if not file_path or not os.path.exists(file_path):
@@ -1528,7 +1625,7 @@ class MuseScoreExtractorApp:
                             if dest_path is not None:
                                 self.seen_output_type_files.add(full_path)
                                 self.root.after(0, self._bring_app_to_front)
-                                self.root.after(0, lambda p=dest_path: self._reveal_file_in_folder(p))
+                                self.root.after(0, lambda p=dest_path: self._handle_successful_extraction(p))
                                 self.log(f"Cleared output folder and moved {os.path.basename(full_path)} to: {dest_path}")
                             else:
                                 self.log(f"Skipped or failed moving {os.path.basename(full_path)} to output folder")

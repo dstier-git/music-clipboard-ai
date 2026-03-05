@@ -51,13 +51,17 @@ Add to your Claude Desktop configuration file:
       "command": "/path/to/your/project/clipboard-full/app/integrations/musescore_mcp/.venv/bin/python",
       "args": [
         "/path/to/your/project/clipboard-full/app/integrations/musescore_mcp/server.py"
-      ]
+      ],
+      "env": {
+        "MUSESCORE_MCP_ALLOW_SHELL": "1"
+      }
     }
   }
 }
 ```
 
 **Note**: Update the paths to match your actual project location.
+`MUSESCORE_MCP_ALLOW_SHELL` is optional. Enable it only if you want Claude to use the `execute_bash` MCP tool.
 
 ## Running the System
 
@@ -136,11 +140,13 @@ This MCP server provides comprehensive MuseScore control:
 - `get_score()` - Get complete score analysis and structure
 - `ping_musescore()` - Test connection to MuseScore
 - `connect_to_musescore()` - Establish WebSocket connection
+- `export_score(path, format)` - Export current score to file (for example MIDI/PDF/MusicXML)
 
 ### **Utilities**
 - `undo()` - Undo last action
 - `set_time_signature(numerator, denominator)` - Change time signature
 - `processSequence(sequence)` - Execute multiple commands in batch
+- `execute_bash(command, cwd, timeout_seconds)` - Run local bash command (only when `MUSESCORE_MCP_ALLOW_SHELL=1`)
 
 ## Sample Music
 

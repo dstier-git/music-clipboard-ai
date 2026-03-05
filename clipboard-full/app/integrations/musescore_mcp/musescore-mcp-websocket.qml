@@ -46,6 +46,7 @@ MuseScore {
             case "syncStateToSelection":    return syncStateToSelection();
             case "ping":                    return "pong";
             case "undo":                    return undo();
+            case "exportScore":             return exportScore(command.params);
             case "goToBeginningOfScore":    return goToBeginningOfScore();
             case "processSequence":         return processSequence(command.params);
 
@@ -273,7 +274,7 @@ MuseScore {
             "getCursorInfo", "goToMeasure", "nextElement", "prevElement", "nextStaff", "prevStaff",
             "selectCurrentMeasure", "processSequence", "insertMeasure", "goToFinalMeasure",
             "goToBeginningOfScore", "setTimeSignature", "addLyrics", "addInstrument",    
-            "setStaffMute", "setInstrumentSound", "setTempo"
+            "setStaffMute", "setInstrumentSound", "setTempo", "exportScore"
         ];
 
         try {
@@ -957,6 +958,57 @@ MuseScore {
             
             return { success: true, message: "Tempo set to " + params.bpm + " BPM" };
         });
+    }
+
+    function exportScore(params) {
+        var validation = validateParams(params, ["path"]);
+        if (!validation.valid) return validation;
+        if (!curScore) return { error: "No score open" };
+
+        try {
+            var rawPath = String(params.path || "").trim();
+            if (!rawPath) return { error: "Path cannot be empty" };
+
+            var exportFormat = String(params.format || "").trim().toLowerCase();
+            if (exportFormat === "midi") exportFormat = "mid";
+
+            var slashIndex = Math.max(rawPath.lastIndexOf("/"), rawPath.lastIndexOf("\\"));
+            var dotIndex = rawPath.lastIndexOf(".");
+            if (!exportFormat && dotIndex > slashIndex) {
+                exportFormat = rawPath.substring(dotIndex + 1).toLowerCase();
+            }
+            if (!exportFormat) exportFormat = "mid";
+
+            var outputBasePath = rawPath;
+            if (dotIndex > slashIndex) {
+                outputBasePath = rawPath.substring(0, dotIndex);
+            }
+
+            if (typeof writeScore !== "function") {
+                return { error: "MuseScore writeScore API is unavailable in this plugin context." };
+            }
+
+            var wrote = writeScore(curScore, outputBasePath, exportFormat);
+            var outputPath = outputBasePath + "." + exportFormat;
+
+            if (!wrote) {
+                return {
+                    success: false,
+                    error: "MuseScore export failed.",
+                    path: outputPath,
+                    format: exportFormat
+                };
+            }
+
+            return {
+                success: true,
+                message: "Score exported",
+                path: outputPath,
+                format: exportFormat
+            };
+        } catch (e) {
+            return { error: e.toString() };
+        }
     }
 
     // ========================================
