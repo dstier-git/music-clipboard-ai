@@ -1290,6 +1290,11 @@ class MuseScoreExtractorApp:
             }
             response_json = self._openai_request_json("https://api.openai.com/v1/responses", api_key, request_payload)
             response_text = self._extract_text_from_openai_response(response_json)
+            if response_text:
+                self.log("OpenAI response text:")
+                self.log(response_text)
+            else:
+                self.log("OpenAI response text was empty.")
             response_obj = self._extract_json_object_from_text(response_text)
             if not response_obj:
                 raise RuntimeError("OpenAI response did not contain valid JSON.")
