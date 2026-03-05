@@ -1,15 +1,2 @@
-# Required dependencies for MuseScore Pitch Extractor (macOS)
-# Core dependencies (required)
-# Note: tkinter, xml.etree.ElementTree, and zipfile are part of Python standard library
-
-# Optional dependencies for automation features
-pyautogui>=0.9.54  # For sending keyboard shortcuts (optional, for automation feature)
-keyboard>=0.13.5  # For global keyboard shortcuts (allows triggering from anywhere)
-psutil>=5.9.0  # Optional: For better process detection (install with: pip install psutil)
-
-# Optional dependencies for MIDI export
-# Note: MIDI export will try to use MuseScore CLI first (if installed)
-# If MuseScore CLI is not available, one of these libraries is required:
-mido>=1.2.10  # Optional: For MIDI file creation (install with: pip install mido)
-# music21>=8.0.0  # Alternative: For MIDI export (install with: pip install music21)
-
+# Deprecated path. Use /requirements.txt at repository root.
+-r ../../requirements.txt

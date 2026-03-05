@@ -93,9 +93,9 @@ logs/
 *.mscbackup
 *.mscbackup1
 
-# Data files (uncomment if you want to ignore data directories)
-# midis/
-# txts/
+# Data files (uncomment if you want to ignore generated output directories)
+# data/outputs/midi/
+# data/outputs/text/
 
 # Environment variables
 .env
@@ -105,4 +105,3 @@ logs/
 # Compiled QML (if any)
 *.qmlc
 *.jsc
-

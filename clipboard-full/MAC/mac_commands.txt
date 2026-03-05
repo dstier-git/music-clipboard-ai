@@ -1,3 +1,6 @@
-# GUI:
-python3 musescore_extractor_gui.py
+# Deprecated legacy command aliases
+# Preferred canonical launchers:
+#   scripts/macos/run_gui.sh
+#   scripts/macos/run_hotkey_listener.sh
 
+python3 -m music_clipboard.gui.app

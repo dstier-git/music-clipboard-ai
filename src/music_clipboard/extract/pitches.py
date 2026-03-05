@@ -6,10 +6,10 @@ import zipfile
 from pathlib import Path
 
 if __package__ is None or __package__ == "":
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.platform_utils import output_dirs
-from app.extract_midi import extract_midi_from_mscx
+from music_clipboard.platform.runtime import output_dirs
+from music_clipboard.extract.midi import extract_midi_from_mscx
 
 OUTPUT_DIR = output_dirs()[0]
 

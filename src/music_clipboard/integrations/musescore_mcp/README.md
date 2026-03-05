@@ -16,9 +16,9 @@ A Model Context Protocol (MCP) server that provides programmatic control over Mu
 
 First, save the QML plugin code to your MuseScore plugins directory:
 
-**macOS**: `~/Documents/MuseScore4/Plugins/musescore-mcp-websocket.qml`
-**Windows**: `%USERPROFILE%\Documents\MuseScore4\Plugins\musescore-mcp-websocket.qml`
-**Linux**: `~/Documents/MuseScore4/Plugins/musescore-mcp-websocket.qml`
+**macOS**: `~/Documents/MuseScore4/Plugins/musescore_mcp_websocket.qml`
+**Windows**: `%USERPROFILE%\Documents\MuseScore4\Plugins\musescore_mcp_websocket.qml`
+**Linux**: `~/Documents/MuseScore4/Plugins/musescore_mcp_websocket.qml`
 
 ### 2. Enable the Plugin in MuseScore
 
@@ -31,9 +31,9 @@ First, save the QML plugin code to your MuseScore plugins directory:
 
 ```bash
 git clone <your-repo>
-cd music_clipboard_ai/clipboard-full/app/integrations/musescore_mcp
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+cd music_clipboard_ai/src/music_clipboard/integrations/musescore_mcp
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install fastmcp websockets
 ```
 
@@ -48,9 +48,9 @@ Add to your Claude Desktop configuration file:
 {
   "mcpServers": {
     "musescore": {
-      "command": "/path/to/your/project/clipboard-full/app/integrations/musescore_mcp/.venv/bin/python",
+      "command": "/path/to/your/project/src/music_clipboard/integrations/musescore_mcp/venv/bin/python",
       "args": [
-        "/path/to/your/project/clipboard-full/app/integrations/musescore_mcp/server.py"
+        "/path/to/your/project/src/music_clipboard/integrations/musescore_mcp/mcp_server.py"
       ],
       "env": {
         "MUSESCORE_MCP_ALLOW_SHELL": "1"
@@ -83,10 +83,10 @@ For development, use the MCP development tools:
 pip install mcp
 
 # Test your server
-mcp dev server.py
+mcp dev mcp_server.py
 
 # Check connection status
-mcp dev server.py --inspect
+mcp dev mcp_server.py --inspect
 ```
 
 ### Viewing Console Output
@@ -152,8 +152,8 @@ This MCP server provides comprehensive MuseScore control:
 
 Check out the `/examples` folder for sample MuseScore files demonstrating various musical styles:
 
-- **Asian Instrumental** - Traditional Asian-inspired instrumental piece
-- **String Quartet** - Classical string quartet arrangement
+- **asian_instrumental** - Traditional Asian-inspired instrumental piece
+- **string_quartet** - Classical string quartet arrangement
 
 Each example includes:
 - `.mscz` - MuseScore file (editable)
@@ -229,10 +229,10 @@ await processSequence(sequence)
 
 ```
 music_clipboard_ai/
-├── .venv/
-└── clipboard-full/app/integrations/musescore_mcp/
-    ├── server.py                       # Python MCP server entry point
-    ├── musescore-mcp-websocket.qml     # MuseScore plugin
+├── venv/
+└── src/music_clipboard/integrations/musescore_mcp/
+    ├── mcp_server.py                       # Python MCP server entry point
+    ├── musescore_mcp_websocket.qml     # MuseScore plugin
     ├── requirements.txt
     ├── README.md
     └── src/                            # Source code modules

@@ -6,7 +6,12 @@ from .notes_measures import setup_notes_measures_tools
 from .staff_instruments import setup_staff_instruments_tools
 from .time_tempo import setup_time_tempo_tools
 from .sequences import setup_sequence_tools
-from .shell import setup_shell_tools
+
+try:
+    from .shell import setup_shell_tools
+except ImportError:
+    def setup_shell_tools(_mcp):
+        return None
 
 __all__ = [
     "setup_connection_tools",

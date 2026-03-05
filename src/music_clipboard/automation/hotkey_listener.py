@@ -6,9 +6,9 @@ import time
 from pathlib import Path
 
 if __package__ is None or __package__ == "":
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.platform_utils import IS_MACOS, IS_WINDOWS, default_hotkey
+from music_clipboard.platform.runtime import IS_MACOS, IS_WINDOWS, default_hotkey
 
 try:
     if IS_MACOS:
@@ -26,7 +26,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_SCRIPT = Path(__file__).resolve().parent / "musescore_extractor_gui.py"
+GUI_MODULE = "music_clipboard.gui.app"
 REQUEST_FILE = Path(tempfile.gettempdir()) / "musescore_hotkey_request.txt"
 HOTKEY = default_hotkey()
 
@@ -48,13 +48,16 @@ def _is_gui_running():
         try:
             cmdline = proc.info.get("cmdline") or []
             name = proc.info.get("name") or ""
+            joined = " ".join(str(part) for part in cmdline)
+            if GUI_MODULE in joined:
+                return True
+            if "python" in name.lower() and "music_clipboard/gui/app.py" in joined.replace("\\", "/"):
+                return True
             for part in cmdline:
                 if not part:
                     continue
-                if APP_SCRIPT.name in os.path.basename(part):
+                if os.path.basename(str(part)) == "app.py" and "music_clipboard" in str(part):
                     return True
-            if "python" in name.lower() and any(APP_SCRIPT.name in str(arg) for arg in cmdline):
-                return True
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     return False
@@ -66,7 +69,13 @@ def _start_gui():
     stdout = subprocess.DEVNULL if IS_MACOS else None
     stderr = subprocess.DEVNULL if IS_MACOS else None
     subprocess.Popen(
-        [str(interpreter), str(APP_SCRIPT), "--trigger-save-selection", "--disable-global-hotkey"],
+        [
+            str(interpreter),
+            "-m",
+            GUI_MODULE,
+            "--trigger-save-selection",
+            "--disable-global-hotkey",
+        ],
         creationflags=creation_flags,
         stdout=stdout,
         stderr=stderr,
@@ -114,7 +123,7 @@ def main():
         pass
 
     display_hotkey = HOTKEY.replace("cmd", "Cmd").replace("ctrl", "Ctrl").replace("alt", "Alt")
-    print(f"Listening for {display_hotkey} -> launches {APP_SCRIPT.name}")
+    print(f"Listening for {display_hotkey} -> launches {GUI_MODULE}")
 
     if IS_MACOS:
         pynput_hotkey = (

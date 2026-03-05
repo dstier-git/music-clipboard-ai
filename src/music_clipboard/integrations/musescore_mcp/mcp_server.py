@@ -1,18 +1,30 @@
-from mcp.server.fastmcp import FastMCP
 import sys
 import logging
+from mcp.server.fastmcp import FastMCP
 
-# Import modular components
-from src.client import MuseScoreClient
-from src.tools import (
-    setup_connection_tools,
-    setup_navigation_tools,
-    setup_notes_measures_tools,
-    setup_staff_instruments_tools,
-    setup_time_tempo_tools,
-    setup_sequence_tools,
-    setup_shell_tools,
-)
+# Support both package execution and direct script execution.
+try:
+    from .src.client import MuseScoreClient
+    from .src.tools import (
+        setup_connection_tools,
+        setup_navigation_tools,
+        setup_notes_measures_tools,
+        setup_staff_instruments_tools,
+        setup_time_tempo_tools,
+        setup_sequence_tools,
+        setup_shell_tools,
+    )
+except ImportError:
+    from src.client import MuseScoreClient
+    from src.tools import (
+        setup_connection_tools,
+        setup_navigation_tools,
+        setup_notes_measures_tools,
+        setup_staff_instruments_tools,
+        setup_time_tempo_tools,
+        setup_sequence_tools,
+        setup_shell_tools,
+    )
 
 # Set up logging
 logging.basicConfig(

@@ -13,9 +13,9 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 
 if __package__ is None or __package__ == "":
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app.platform_utils import IS_MACOS, IS_WINDOWS, default_hotkey, output_dirs
+from music_clipboard.platform.runtime import IS_MACOS, IS_WINDOWS, default_hotkey, output_dirs
 
 # Try to import automation libraries
 try:
@@ -115,13 +115,13 @@ HOTKEY_MODIFIER_ALIASES = {
 EXTRACTION_FUNCTION = None
 MIDI_EXTRACTION_FUNCTION = None
 try:
-    from app.extract_pitches_with_position import extract_pitches_with_position_from_mscx
+    from music_clipboard.extract.pitches_with_position import extract_pitches_with_position_from_mscx
 
     EXTRACTION_FUNCTION = extract_pitches_with_position_from_mscx
     EXTRACTION_SCRIPT = "extract_pitches_with_position"
 except ImportError:
     try:
-        from app.extract_pitches import extract_pitches_from_mscx
+        from music_clipboard.extract.pitches import extract_pitches_from_mscx
 
         EXTRACTION_SCRIPT = "extract_pitches"
 
@@ -137,7 +137,7 @@ except ImportError:
         EXTRACTION_SCRIPT = None
 
 try:
-    from app.extract_midi import extract_midi_from_mscx
+    from music_clipboard.extract.midi import extract_midi_from_mscx
 
     MIDI_EXTRACTION_FUNCTION = extract_midi_from_mscx
 except ImportError:
@@ -501,9 +501,9 @@ class MuseScoreExtractorApp:
             messagebox.showerror(
                 "Error",
                 "Could not import extraction scripts.\n\n"
-                "Please ensure one of these files is in the same directory:\n"
-                "- extract_pitches_with_position.py\n"
-                "- extract_pitches.py",
+                "Please ensure extraction modules are importable:\n"
+                "- music_clipboard.extract.pitches_with_position\n"
+                "- music_clipboard.extract.pitches",
             )
             root.destroy()
             return
@@ -1571,7 +1571,7 @@ class MuseScoreExtractorApp:
             if output_format == "midi":
                 if MIDI_EXTRACTION_FUNCTION is None:
                     error_msg = (
-                        "MIDI extraction function not available. Please ensure extract_midi.py is in the same directory."
+                        "MIDI extraction function not available. Please ensure music_clipboard.extract.midi is importable."
                     )
                     self.log(f"{error_msg}\n")
                     self.root.after(0, lambda: messagebox.showerror("Error", error_msg))

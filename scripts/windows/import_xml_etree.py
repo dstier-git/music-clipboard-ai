@@ -94,10 +94,10 @@ def extract_pitches_from_mscx(mscx_file_path, output_file_path=None):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python extract_pitches.py <path_to_mscx_file> [output_file]")
+        print("Usage: python -m music_clipboard.extract.pitches <path_to_mscx_file> [output_file]")
         print("\nExample:")
-        print("  python extract_pitches.py score.mscx")
-        print("  python extract_pitches.py score.mscx output.txt")
+        print("  python -m music_clipboard.extract.pitches score.mscx")
+        print("  python -m music_clipboard.extract.pitches score.mscx output.txt")
         sys.exit(1)
     
     mscx_file = sys.argv[1]
