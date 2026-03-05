@@ -1,30 +1,23 @@
-import sys
 import logging
+import sys
+from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
-# Support both package execution and direct script execution.
-try:
-    from .src.client import MuseScoreClient
-    from .src.tools import (
-        setup_connection_tools,
-        setup_navigation_tools,
-        setup_notes_measures_tools,
-        setup_staff_instruments_tools,
-        setup_time_tempo_tools,
-        setup_sequence_tools,
-        setup_shell_tools,
-    )
-except ImportError:
-    from src.client import MuseScoreClient
-    from src.tools import (
-        setup_connection_tools,
-        setup_navigation_tools,
-        setup_notes_measures_tools,
-        setup_staff_instruments_tools,
-        setup_time_tempo_tools,
-        setup_sequence_tools,
-        setup_shell_tools,
-    )
+# Ensure local imports work when launched via absolute script path.
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from src.client import MuseScoreClient
+from src.tools import (
+    setup_connection_tools,
+    setup_navigation_tools,
+    setup_notes_measures_tools,
+    setup_staff_instruments_tools,
+    setup_time_tempo_tools,
+    setup_sequence_tools,
+    setup_shell_tools,
+)
 
 # Set up logging
 logging.basicConfig(

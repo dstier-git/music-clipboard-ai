@@ -9,6 +9,8 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+import urllib.error
+import urllib.request
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 
@@ -101,6 +103,12 @@ PROGRAM_ORDER = ["musescore", "logic_pro"]
 TAB_CLIPBOARD = "clipboard"
 TAB_AI_EDITING = "ai_editing"
 TAB_SETTINGS = "settings"
+AI_FLOW_CLAUDE = "claude"
+AI_FLOW_OPENAI_MINIMAL = "openai_minimal"
+AI_FLOW_LABELS = {
+    AI_FLOW_CLAUDE: "Claude (MuseScore automation)",
+    AI_FLOW_OPENAI_MINIMAL: "OpenAI MIDI (minimal)",
+}
 HOTKEY_MODIFIER_ORDER = ["cmd", "ctrl", "alt", "shift"]
 HOTKEY_MODIFIER_ALIASES = {
     "cmd": "cmd",
@@ -142,6 +150,13 @@ try:
     MIDI_EXTRACTION_FUNCTION = extract_midi_from_mscx
 except ImportError:
     MIDI_EXTRACTION_FUNCTION = None
+
+try:
+    import mido
+    MIDO_AVAILABLE = True
+except ImportError:
+    mido = None
+    MIDO_AVAILABLE = False
 
 
 def _format_hotkey_label(hotkey):
@@ -533,6 +548,7 @@ class MuseScoreExtractorApp:
         self._ai_flow_lock = threading.Lock()
         self._ai_export_lock = threading.Lock()
         self._ai_export_in_progress = set()
+        self.ai_flow_var = tk.StringVar(value=AI_FLOW_LABELS[AI_FLOW_CLAUDE])
 
         self.create_widgets()
         self.apply_saved_preferences()
@@ -919,6 +935,20 @@ class MuseScoreExtractorApp:
         self.ai_instructions_label = ttk.Label(ai_frame, justify=tk.LEFT, foreground="gray")
         self.ai_instructions_label.grid(row=1, column=0, sticky=tk.W)
 
+        ai_flow_frame = ttk.Frame(ai_frame)
+        ai_flow_frame.grid(row=2, column=0, sticky=tk.W, pady=(10, 0))
+        ttk.Label(ai_flow_frame, text="AI Option:").grid(row=0, column=0, sticky=tk.W, padx=(0, 6))
+        self.ai_flow_dropdown = ttk.Combobox(
+            ai_flow_frame,
+            textvariable=self.ai_flow_var,
+            state="readonly",
+            values=list(AI_FLOW_LABELS.values()),
+            width=34,
+        )
+        self.ai_flow_dropdown.grid(row=0, column=1, sticky=tk.W)
+        self.ai_flow_var.set(AI_FLOW_LABELS[AI_FLOW_CLAUDE])
+        self.ai_flow_dropdown.bind("<<ComboboxSelected>>", self._on_ai_flow_changed)
+
         output_frame, _, _ = self._build_output_panel(ai_tab)
         output_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=5)
 
@@ -1000,8 +1030,18 @@ class MuseScoreExtractorApp:
         self._update_program_dependent_ui()
         self.save_preferences()
 
+    def _on_ai_flow_changed(self, _event=None):
+        self._update_program_dependent_ui()
+
     def _is_ai_editing_active(self):
         return self._get_active_tab_id() == TAB_AI_EDITING
+
+    def _get_selected_ai_flow(self):
+        selected_label = (self.ai_flow_var.get() or "").strip()
+        for flow_id, label in AI_FLOW_LABELS.items():
+            if selected_label == label:
+                return flow_id
+        return AI_FLOW_CLAUDE
 
     def _build_instruction_text(self):
         selected_program = self._get_selected_program_id()
@@ -1022,12 +1062,20 @@ class MuseScoreExtractorApp:
     def _build_ai_instruction_text(self):
         selected_program = self._get_selected_program_id()
         selected_label = self._get_program_label(selected_program)
+        selected_flow = self._get_selected_ai_flow()
+        selected_flow_label = AI_FLOW_LABELS.get(selected_flow, AI_FLOW_LABELS[AI_FLOW_CLAUDE])
+        flow_notes = (
+            "- Claude flow opens MuseScore + plugin and asks Claude to export MIDI."
+            if selected_flow == AI_FLOW_CLAUDE
+            else "- OpenAI flow sends MIDI as text JSON + your prompt, then rebuilds returned MIDI."
+        )
         return (
             "AI Editing Mode:\n"
             "- New watched files still run extraction first.\n"
-            "- Claude automation runs only while this tab is active.\n"
+            "- AI automation runs only while this tab is active.\n"
             f"- Save/export trigger target program: {selected_label}\n"
-            "- The app waits for final exported MIDI before revealing it."
+            f"- Selected AI option: {selected_flow_label}\n"
+            f"{flow_notes}"
         )
 
     def _update_program_dependent_ui(self):
@@ -1038,13 +1086,243 @@ class MuseScoreExtractorApp:
         ai_active = self._is_ai_editing_active()
         self.ai_mode_label.config(
             text=(
-                "Status: AI Editing ACTIVE (Claude automation enabled)"
+                "Status: AI Editing ACTIVE (automation enabled)"
                 if ai_active
-                else "Status: AI Editing inactive (select this tab to enable Claude automation)"
+                else "Status: AI Editing inactive (select this tab to enable automation)"
             ),
             foreground=("green" if ai_active else "gray"),
         )
         self.ai_instructions_label.config(text=self._build_ai_instruction_text())
+
+    def _parse_dotenv_key(self, env_name):
+        project_root = Path(__file__).resolve().parents[3]
+        env_path = project_root / ".env"
+        if not env_path.exists():
+            return ""
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or "=" not in stripped:
+                    continue
+                key, value = stripped.split("=", 1)
+                normalized_key = key.strip()
+                if normalized_key.startswith("export "):
+                    normalized_key = normalized_key[len("export ") :].strip()
+                if normalized_key != env_name:
+                    continue
+                cleaned = value.strip().strip('"').strip("'")
+                return cleaned
+        except Exception:
+            return ""
+        return ""
+
+    def _resolve_openai_api_key(self):
+        api_key = (os.environ.get("OPENAI_KEY") or "").strip()
+        if api_key:
+            return api_key
+        return self._parse_dotenv_key("OPENAI_KEY")
+
+    def _openai_request_json(self, url, api_key, payload):
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=180) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def _extract_text_from_openai_response(self, response_json):
+        output_text = (response_json or {}).get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
+
+        output_items = (response_json or {}).get("output", [])
+        fragments = []
+        for item in output_items:
+            content_items = item.get("content", []) if isinstance(item, dict) else []
+            for content in content_items:
+                if not isinstance(content, dict):
+                    continue
+                if content.get("type") in ("output_text", "text"):
+                    text_value = content.get("text")
+                    if isinstance(text_value, str) and text_value.strip():
+                        fragments.append(text_value.strip())
+        return "\n".join(fragments).strip()
+
+    def _extract_json_object_from_text(self, response_text):
+        raw_text = (response_text or "").strip()
+        if not raw_text:
+            return None
+
+        if raw_text.startswith("```"):
+            lines = raw_text.splitlines()
+            if len(lines) >= 3 and lines[0].startswith("```") and lines[-1].startswith("```"):
+                raw_text = "\n".join(lines[1:-1]).strip()
+
+        payload = None
+        try:
+            payload = json.loads(raw_text)
+        except json.JSONDecodeError:
+            if "{" in raw_text and "}" in raw_text:
+                start = raw_text.find("{")
+                end = raw_text.rfind("}")
+                if start != -1 and end > start:
+                    payload = json.loads(raw_text[start : end + 1])
+        if not isinstance(payload, dict):
+            return None
+
+        return payload
+
+    def _ensure_midi_input_for_openai(self, file_path):
+        extension = Path(file_path).suffix.lower()
+        if extension in (".mid", ".midi"):
+            return file_path, False
+
+        if extension in EXTRACTABLE_SCORE_EXTENSIONS:
+            if MIDI_EXTRACTION_FUNCTION is None:
+                raise RuntimeError("MIDI extraction function is not available.")
+            with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as tmp:
+                temp_midi_path = tmp.name
+            midi_path = MIDI_EXTRACTION_FUNCTION(file_path, temp_midi_path)
+            if not midi_path or not os.path.exists(midi_path):
+                raise RuntimeError("Could not prepare MIDI input from score.")
+            return midi_path, True
+
+        raise RuntimeError(f"Unsupported file type for OpenAI MIDI flow: {extension}")
+
+    def _midi_to_text_payload(self, midi_path):
+        if not MIDO_AVAILABLE:
+            raise RuntimeError("mido is required for OpenAI MIDI text flow. Install with: pip install mido")
+
+        midi_obj = mido.MidiFile(midi_path)
+        tracks_payload = []
+        for track in midi_obj.tracks:
+            track_messages = []
+            for msg in track:
+                msg_dict = msg.dict()
+                msg_dict["is_meta"] = bool(msg.is_meta)
+                track_messages.append(msg_dict)
+            tracks_payload.append({"name": track.name or "", "messages": track_messages})
+
+        return {
+            "type": int(midi_obj.type),
+            "ticks_per_beat": int(midi_obj.ticks_per_beat),
+            "tracks": tracks_payload,
+        }
+
+    def _text_payload_to_midi_file(self, midi_payload, output_path):
+        if not MIDO_AVAILABLE:
+            raise RuntimeError("mido is required for OpenAI MIDI text flow. Install with: pip install mido")
+        if not isinstance(midi_payload, dict):
+            raise RuntimeError("Returned MIDI payload is not a JSON object.")
+
+        ticks_per_beat = int(midi_payload.get("ticks_per_beat", 480))
+        midi_type = int(midi_payload.get("type", 1))
+        tracks = midi_payload.get("tracks")
+        if not isinstance(tracks, list) or not tracks:
+            raise RuntimeError("Returned MIDI JSON must include a non-empty 'tracks' list.")
+
+        out_midi = mido.MidiFile(type=midi_type, ticks_per_beat=ticks_per_beat)
+        for track_obj in tracks:
+            if not isinstance(track_obj, dict):
+                continue
+            out_track = mido.MidiTrack()
+            out_track.name = (track_obj.get("name") or "").strip()
+            for message_obj in track_obj.get("messages", []):
+                if not isinstance(message_obj, dict):
+                    continue
+                msg_data = dict(message_obj)
+                is_meta = bool(msg_data.pop("is_meta", False))
+                try:
+                    if is_meta:
+                        msg = mido.MetaMessage.from_dict(msg_data)
+                    else:
+                        msg = mido.Message.from_dict(msg_data)
+                except Exception as exc:
+                    raise RuntimeError(f"Invalid MIDI message returned by model: {exc}")
+                out_track.append(msg)
+            out_midi.tracks.append(out_track)
+
+        out_midi.save(output_path)
+
+    def _run_openai_midi_edit_flow(self, file_path, prompt_text):
+        temporary_input = False
+        midi_input_path = None
+        try:
+            api_key = self._resolve_openai_api_key()
+            if not api_key:
+                raise RuntimeError("OPENAI_KEY was not found in environment or .env.")
+
+            midi_input_path, temporary_input = self._ensure_midi_input_for_openai(file_path)
+            self.log(f"Preparing OpenAI MIDI edit for: {os.path.basename(midi_input_path)}")
+            midi_text_payload = self._midi_to_text_payload(midi_input_path)
+
+            request_payload = {
+                "model": "gpt-4.1",
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": (
+                                    "You are editing a MIDI represented as JSON.\n"
+                                    "Return ONLY valid JSON with this shape:\n"
+                                    "{ \"midi_json\": {\"type\": <int>, \"ticks_per_beat\": <int>, "
+                                    "\"tracks\": [{\"name\": <string>, \"messages\": [<message dicts>]}]}}\n"
+                                    "Keep message dictionaries compatible with mido Message.from_dict / "
+                                    "MetaMessage.from_dict, including delta-time field 'time'. "
+                                    "No markdown fences, no explanation."
+                                ),
+                            },
+                            {"type": "input_text", "text": f"User prompt: {prompt_text.strip()}"},
+                            {
+                                "type": "input_text",
+                                "text": "Input MIDI JSON:\n" + json.dumps(midi_text_payload, separators=(",", ":")),
+                            },
+                        ],
+                    }
+                ],
+            }
+            response_json = self._openai_request_json("https://api.openai.com/v1/responses", api_key, request_payload)
+            response_text = self._extract_text_from_openai_response(response_json)
+            response_obj = self._extract_json_object_from_text(response_text)
+            if not response_obj:
+                raise RuntimeError("OpenAI response did not contain valid JSON.")
+            midi_output_payload = response_obj.get("midi_json")
+            if not isinstance(midi_output_payload, dict):
+                raise RuntimeError("OpenAI response JSON must contain top-level key 'midi_json'.")
+
+            os.makedirs(MIDI_OUTPUT_DIR, exist_ok=True)
+            base_name = os.path.splitext(os.path.basename(file_path))[0]
+            output_path = os.path.join(MIDI_OUTPUT_DIR, f"{base_name}_openai_ai.mid")
+            self._text_payload_to_midi_file(midi_output_payload, output_path)
+
+            self.log(f"OpenAI MIDI edit saved to: {output_path}")
+            self._handle_successful_extraction(output_path)
+        except urllib.error.HTTPError as exc:
+            details = ""
+            try:
+                details = exc.read().decode("utf-8")
+            except Exception:
+                details = str(exc)
+            error_msg = f"OpenAI API request failed ({exc.code}): {details}"
+            self.log(f"Error: {error_msg}")
+            self._show_error_async("OpenAI Request Failed", error_msg)
+        except Exception as exc:
+            error_msg = str(exc)
+            self.log(f"Error: {error_msg}")
+            self._show_error_async("OpenAI MIDI Flow Failed", error_msg)
+        finally:
+            if temporary_input and midi_input_path and os.path.exists(midi_input_path):
+                try:
+                    os.remove(midi_input_path)
+                except OSError:
+                    pass
 
     def _reset_custom_hotkey(self, program_id):
         self.custom_hotkey_vars[program_id].set("")
@@ -1520,31 +1798,36 @@ class MuseScoreExtractorApp:
             self.log(f"Skipping extraction for MIDI input: {os.path.basename(file_path)}")
 
         if not self._is_ai_editing_active():
-            self.log(f"Clipboard mode: skipping Claude automation for {os.path.basename(file_path)}")
-            return
-
-        if not IS_MACOS:
+            self.log(f"Clipboard mode: skipping AI automation for {os.path.basename(file_path)}")
             return
 
         prompt = simpledialog.askstring(
             "AI Edit Prompt",
             (
                 f"Enter the AI edit prompt for:\n{os.path.basename(file_path)}\n\n"
-                "The app will send:\n"
-                "Connect to musescore and <your prompt>"
+                "The app will append your text to the selected AI option prompt."
             ),
             parent=self.root,
         )
 
         if prompt is None or not prompt.strip():
-            self.log(f"Skipped Claude send for {os.path.basename(file_path)} (empty/canceled prompt).")
+            self.log(f"Skipped AI flow for {os.path.basename(file_path)} (empty/canceled prompt).")
             return
 
-        thread = threading.Thread(
-            target=self._run_ai_edit_flow,
-            args=(file_path, prompt.strip()),
-            daemon=True,
-        )
+        selected_flow = self._get_selected_ai_flow()
+        if selected_flow == AI_FLOW_OPENAI_MINIMAL:
+            thread = threading.Thread(
+                target=self._run_openai_midi_edit_flow,
+                args=(file_path, prompt.strip()),
+                daemon=True,
+            )
+            thread.start()
+            return
+
+        if not IS_MACOS:
+            self.log("Claude AI flow is only supported on macOS.")
+            return
+        thread = threading.Thread(target=self._run_ai_edit_flow, args=(file_path, prompt.strip()), daemon=True)
         thread.start()
 
     def extract_file(self, file_path):
