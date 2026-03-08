@@ -96,6 +96,7 @@ logs/
 # Data files (uncomment if you want to ignore generated output directories)
 # data/outputs/midi/
 # data/outputs/text/
+*.mid
 
 # Environment variables
 .env
