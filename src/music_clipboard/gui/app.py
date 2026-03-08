@@ -109,6 +109,11 @@ AI_FLOW_LABELS = {
     AI_FLOW_CLAUDE: "Claude (MuseScore automation)",
     AI_FLOW_OPENAI_MINIMAL: "OpenAI MIDI (minimal)",
 }
+OPENAI_MODEL_CLASSIFIER = "gpt-5-nano"
+OPENAI_MODEL_SEMANTIC = "gpt-5.1"
+OPENAI_MODEL_MIDI = "gpt-5.2"
+OPENAI_MIDI_CHUNK_THRESHOLD_CHARS = 180000
+OPENAI_SEMANTIC_SENTINEL = "NO_SEMANTIC_QUESTION"
 HOTKEY_MODIFIER_ORDER = ["cmd", "ctrl", "alt", "shift"]
 HOTKEY_MODIFIER_ALIASES = {
     "cmd": "cmd",
@@ -548,7 +553,7 @@ class MuseScoreExtractorApp:
         self._ai_flow_lock = threading.Lock()
         self._ai_export_lock = threading.Lock()
         self._ai_export_in_progress = set()
-        self.ai_flow_var = tk.StringVar(value=AI_FLOW_LABELS[AI_FLOW_CLAUDE])
+        self.ai_flow_var = tk.StringVar(value=AI_FLOW_LABELS[AI_FLOW_OPENAI_MINIMAL])
 
         self.create_widgets()
         self.apply_saved_preferences()
@@ -946,7 +951,7 @@ class MuseScoreExtractorApp:
             width=34,
         )
         self.ai_flow_dropdown.grid(row=0, column=1, sticky=tk.W)
-        self.ai_flow_var.set(AI_FLOW_LABELS[AI_FLOW_CLAUDE])
+        self.ai_flow_var.set(AI_FLOW_LABELS[AI_FLOW_OPENAI_MINIMAL])
         self.ai_flow_dropdown.bind("<<ComboboxSelected>>", self._on_ai_flow_changed)
 
         output_frame, _, _ = self._build_output_panel(ai_tab)
@@ -1041,7 +1046,7 @@ class MuseScoreExtractorApp:
         for flow_id, label in AI_FLOW_LABELS.items():
             if selected_label == label:
                 return flow_id
-        return AI_FLOW_CLAUDE
+        return AI_FLOW_OPENAI_MINIMAL
 
     def _build_instruction_text(self):
         selected_program = self._get_selected_program_id()
@@ -1135,6 +1140,13 @@ class MuseScoreExtractorApp:
         with urllib.request.urlopen(request, timeout=180) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def _openai_responses_call(self, api_key, model, content_items):
+        payload = {
+            "model": model,
+            "input": [{"role": "user", "content": content_items}],
+        }
+        return self._openai_request_json("https://api.openai.com/v1/responses", api_key, payload)
+
     def _extract_text_from_openai_response(self, response_json):
         output_text = (response_json or {}).get("output_text")
         if isinstance(output_text, str) and output_text.strip():
@@ -1171,11 +1183,75 @@ class MuseScoreExtractorApp:
                 start = raw_text.find("{")
                 end = raw_text.rfind("}")
                 if start != -1 and end > start:
-                    payload = json.loads(raw_text[start : end + 1])
+                    try:
+                        payload = json.loads(raw_text[start : end + 1])
+                    except json.JSONDecodeError:
+                        payload = None
         if not isinstance(payload, dict):
             return None
 
         return payload
+
+    def _classify_prompt_for_semantic_and_edit_local(self, prompt_text):
+        prompt_lower = (prompt_text or "").strip().lower()
+        semantic_indicators = ["why", "how", "what is", "explain", "theory", "meaning"]
+        edit_indicators = ["transpose", "quantize", "humanize", "velocity", "swing", "note", "bar", "chord"]
+        has_semantic = any(token in prompt_lower for token in semantic_indicators)
+        has_edit = any(token in prompt_lower for token in edit_indicators)
+        return has_semantic, has_edit
+
+    def _run_openai_classifier_call(self, api_key, prompt_text):
+        content = [
+            {
+                "type": "input_text",
+                "text": (
+                    "Classify whether the user prompt includes a semantic/music-theory explanation request.\n"
+                    "Return ONLY valid JSON with exactly:\n"
+                    "{ \"needs_semantic\": <true|false> }\n"
+                    "Set true if any semantic explanation is requested. Otherwise false."
+                ),
+            },
+            {"type": "input_text", "text": f"User prompt:\n{prompt_text.strip()}"},
+        ]
+        response_json = self._openai_responses_call(api_key, OPENAI_MODEL_CLASSIFIER, content)
+        response_text = self._extract_text_from_openai_response(response_json)
+        response_obj = self._extract_json_object_from_text(response_text)
+        if not isinstance(response_obj, dict) or set(response_obj.keys()) != {"needs_semantic"}:
+            raise RuntimeError("Classifier did not return required JSON shape.")
+        needs_semantic = response_obj.get("needs_semantic")
+        if not isinstance(needs_semantic, bool):
+            raise RuntimeError("Classifier 'needs_semantic' must be boolean.")
+        return needs_semantic
+
+    def _run_openai_semantic_call(self, api_key, prompt_text):
+        content = [
+            {
+                "type": "input_text",
+                "text": (
+                    "You are for semantic music Q&A only.\n"
+                    f"If there is no semantic question, return exactly {OPENAI_SEMANTIC_SENTINEL}.\n"
+                    "If there is a semantic question, return ONLY valid JSON:\n"
+                    "{ \"assistant_text\": \"<answer>\" }\n"
+                    "Do not provide MIDI edits or event-level instructions."
+                ),
+            },
+            {"type": "input_text", "text": f"User prompt:\n{prompt_text.strip()}"},
+        ]
+        response_json = self._openai_responses_call(api_key, OPENAI_MODEL_SEMANTIC, content)
+        return self._extract_text_from_openai_response(response_json)
+
+    def _parse_semantic_response_text(self, response_text):
+        text = (response_text or "").strip()
+        if not text:
+            return None
+        if text == OPENAI_SEMANTIC_SENTINEL:
+            return None
+        payload = self._extract_json_object_from_text(text)
+        if isinstance(payload, dict):
+            assistant_text = payload.get("assistant_text")
+            if isinstance(assistant_text, str) and assistant_text.strip():
+                return assistant_text.strip()
+        return text
 
     def _ensure_midi_input_for_openai(self, file_path):
         extension = Path(file_path).suffix.lower()
@@ -1214,7 +1290,7 @@ class MuseScoreExtractorApp:
             "tracks": tracks_payload,
         }
 
-    def _text_payload_to_midi_file(self, midi_payload, output_path):
+    def _validate_midi_payload(self, midi_payload):
         if not MIDO_AVAILABLE:
             raise RuntimeError("mido is required for OpenAI MIDI text flow. Install with: pip install mido")
         if not isinstance(midi_payload, dict):
@@ -1226,7 +1302,7 @@ class MuseScoreExtractorApp:
         if not isinstance(tracks, list) or not tracks:
             raise RuntimeError("Returned MIDI JSON must include a non-empty 'tracks' list.")
 
-        out_midi = mido.MidiFile(type=midi_type, ticks_per_beat=ticks_per_beat)
+        validated_tracks = []
         for track_obj in tracks:
             if not isinstance(track_obj, dict):
                 continue
@@ -1237,6 +1313,9 @@ class MuseScoreExtractorApp:
                     continue
                 msg_data = dict(message_obj)
                 is_meta = bool(msg_data.pop("is_meta", False))
+                msg_time = msg_data.get("time", 0)
+                if int(msg_time) < 0:
+                    raise RuntimeError("Invalid MIDI message returned by model: negative delta-time is not allowed.")
                 try:
                     if is_meta:
                         msg = mido.MetaMessage.from_dict(msg_data)
@@ -1245,9 +1324,121 @@ class MuseScoreExtractorApp:
                 except Exception as exc:
                     raise RuntimeError(f"Invalid MIDI message returned by model: {exc}")
                 out_track.append(msg)
-            out_midi.tracks.append(out_track)
+            validated_tracks.append(out_track)
 
+        if not validated_tracks:
+            raise RuntimeError("Returned MIDI JSON produced no valid tracks.")
+        return midi_type, ticks_per_beat, validated_tracks
+
+    def _text_payload_to_midi_file(self, midi_payload, output_path):
+        midi_type, ticks_per_beat, validated_tracks = self._validate_midi_payload(midi_payload)
+        out_midi = mido.MidiFile(type=midi_type, ticks_per_beat=ticks_per_beat)
+        for track in validated_tracks:
+            out_midi.tracks.append(track)
         out_midi.save(output_path)
+
+    def _build_openai_midi_edit_content(self, prompt_text, midi_payload, chunk_index=None, chunk_count=None, retry_error=None):
+        chunk_text = "single payload"
+        if chunk_index is not None and chunk_count is not None:
+            chunk_text = f"chunk {chunk_index + 1} of {chunk_count}"
+
+        retry_text = ""
+        if retry_error:
+            retry_text = (
+                "\nThe previous response was invalid. Fix it and return strictly valid JSON. "
+                f"Previous validation error: {retry_error}"
+            )
+
+        return [
+            {
+                "type": "input_text",
+                "text": (
+                    "You are editing a MIDI represented as JSON.\n"
+                    "Return ONLY valid JSON with this exact top-level shape:\n"
+                    "{ \"midi_json\": {\"type\": <int>, \"ticks_per_beat\": <int>, "
+                    "\"tracks\": [{\"name\": <string>, \"messages\": [<message dicts>]}]}}\n"
+                    "Message dicts must be compatible with mido Message.from_dict / MetaMessage.from_dict.\n"
+                    "Use non-negative integer delta-time field 'time'.\n"
+                    f"Current processing scope: {chunk_text}.{retry_text}\n"
+                    "No markdown and no extra keys."
+                ),
+            },
+            {"type": "input_text", "text": f"User prompt:\n{prompt_text.strip()}"},
+            {"type": "input_text", "text": "Input MIDI JSON:\n" + json.dumps(midi_payload, separators=(",", ":"))},
+        ]
+
+    def _call_openai_midi_editor(self, api_key, prompt_text, midi_payload, chunk_index=None, chunk_count=None):
+        last_error = ""
+        for attempt in range(2):
+            content = self._build_openai_midi_edit_content(
+                prompt_text,
+                midi_payload,
+                chunk_index=chunk_index,
+                chunk_count=chunk_count,
+                retry_error=last_error if attempt == 1 else None,
+            )
+            response_json = self._openai_responses_call(api_key, OPENAI_MODEL_MIDI, content)
+            response_text = self._extract_text_from_openai_response(response_json)
+            if response_text:
+                scope = (
+                    f"chunk {chunk_index + 1}/{chunk_count}"
+                    if chunk_index is not None and chunk_count is not None
+                    else "single payload"
+                )
+                self.log(f"OpenAI MIDI response text ({scope}):")
+                self.log(response_text)
+            response_obj = self._extract_json_object_from_text(response_text)
+            if not response_obj:
+                last_error = "Response did not contain valid JSON."
+                continue
+            if set(response_obj.keys()) != {"midi_json"}:
+                last_error = "Response JSON must contain only top-level key 'midi_json'."
+                continue
+            midi_output_payload = response_obj.get("midi_json")
+            if not isinstance(midi_output_payload, dict):
+                last_error = "Response JSON did not include top-level 'midi_json'."
+                continue
+            try:
+                self._validate_midi_payload(midi_output_payload)
+                return midi_output_payload
+            except Exception as exc:
+                last_error = str(exc)
+                continue
+        raise RuntimeError(f"OpenAI MIDI response invalid after retry: {last_error}")
+
+    def _chunk_midi_payload_by_track(self, midi_payload, max_chars):
+        tracks = midi_payload.get("tracks") or []
+        if not tracks:
+            return [midi_payload]
+
+        chunks = []
+        current = []
+        for track in tracks:
+            candidate = current + [track]
+            candidate_payload = {
+                "type": int(midi_payload.get("type", 1)),
+                "ticks_per_beat": int(midi_payload.get("ticks_per_beat", 480)),
+                "tracks": candidate,
+            }
+            candidate_len = len(json.dumps(candidate_payload, separators=(",", ":")))
+            if current and candidate_len > max_chars:
+                chunks.append(current)
+                current = [track]
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+
+        chunk_payloads = []
+        for chunk_tracks in chunks:
+            chunk_payloads.append(
+                {
+                    "type": int(midi_payload.get("type", 1)),
+                    "ticks_per_beat": int(midi_payload.get("ticks_per_beat", 480)),
+                    "tracks": chunk_tracks,
+                }
+            )
+        return chunk_payloads
 
     def _run_openai_midi_edit_flow(self, file_path, prompt_text):
         temporary_input = False
@@ -1260,47 +1451,76 @@ class MuseScoreExtractorApp:
             midi_input_path, temporary_input = self._ensure_midi_input_for_openai(file_path)
             self.log(f"Preparing OpenAI MIDI edit for: {os.path.basename(midi_input_path)}")
             midi_text_payload = self._midi_to_text_payload(midi_input_path)
+            has_edit = self._classify_prompt_for_semantic_and_edit_local(prompt_text)[1]
+            try:
+                needs_semantic = self._run_openai_classifier_call(api_key, prompt_text)
+                self.log(
+                    "Semantic gate: classifier "
+                    f"({OPENAI_MODEL_CLASSIFIER}) -> {'run Call A' if needs_semantic else 'skip Call A'}."
+                )
+            except Exception as classifier_exc:
+                needs_semantic = self._classify_prompt_for_semantic_and_edit_local(prompt_text)[0]
+                self.log(
+                    "Semantic gate: classifier failed; using local rules "
+                    f"({'run Call A' if needs_semantic else 'skip Call A'}). Details: {classifier_exc}"
+                )
 
-            request_payload = {
-                "model": "gpt-4.1",
-                "input": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "input_text",
-                                "text": (
-                                    "You are editing a MIDI represented as JSON.\n"
-                                    "Return ONLY valid JSON with this shape:\n"
-                                    "{ \"midi_json\": {\"type\": <int>, \"ticks_per_beat\": <int>, "
-                                    "\"tracks\": [{\"name\": <string>, \"messages\": [<message dicts>]}]}}\n"
-                                    "Keep message dictionaries compatible with mido Message.from_dict / "
-                                    "MetaMessage.from_dict, including delta-time field 'time'. "
-                                    "No markdown fences, no explanation."
-                                ),
-                            },
-                            {"type": "input_text", "text": f"User prompt: {prompt_text.strip()}"},
-                            {
-                                "type": "input_text",
-                                "text": "Input MIDI JSON:\n" + json.dumps(midi_text_payload, separators=(",", ":")),
-                            },
-                        ],
-                    }
-                ],
-            }
-            response_json = self._openai_request_json("https://api.openai.com/v1/responses", api_key, request_payload)
-            response_text = self._extract_text_from_openai_response(response_json)
-            if response_text:
-                self.log("OpenAI response text:")
-                self.log(response_text)
+            if needs_semantic:
+                self.log(f"Running Call A (semantic) with {OPENAI_MODEL_SEMANTIC}.")
+                try:
+                    semantic_response = self._run_openai_semantic_call(api_key, prompt_text)
+                    semantic_text = self._parse_semantic_response_text(semantic_response)
+                    if semantic_text:
+                        self.log("Call A assistant text:")
+                        self.log(semantic_text)
+                    else:
+                        self.log("Call A returned no semantic answer.")
+                except Exception as semantic_exc:
+                    self.log(f"Call A failed; continuing with Call B. Details: {semantic_exc}")
             else:
-                self.log("OpenAI response text was empty.")
-            response_obj = self._extract_json_object_from_text(response_text)
-            if not response_obj:
-                raise RuntimeError("OpenAI response did not contain valid JSON.")
-            midi_output_payload = response_obj.get("midi_json")
-            if not isinstance(midi_output_payload, dict):
-                raise RuntimeError("OpenAI response JSON must contain top-level key 'midi_json'.")
+                if has_edit:
+                    self.log("Semantic gate: edit-only indicators found; skipping Call A.")
+                else:
+                    self.log("Semantic gate: no semantic indicators; skipping Call A.")
+
+            serialized_len = len(json.dumps(midi_text_payload, separators=(",", ":")))
+            if serialized_len > OPENAI_MIDI_CHUNK_THRESHOLD_CHARS:
+                chunk_payloads = self._chunk_midi_payload_by_track(midi_text_payload, OPENAI_MIDI_CHUNK_THRESHOLD_CHARS)
+                self.log(
+                    f"Call B ({OPENAI_MODEL_MIDI}) processing mode: chunked by track "
+                    f"({len(chunk_payloads)} chunks, payload chars={serialized_len})."
+                )
+
+                merged_tracks = []
+                merged_type = int(midi_text_payload.get("type", 1))
+                merged_tpb = int(midi_text_payload.get("ticks_per_beat", 480))
+                total_chunks = len(chunk_payloads)
+                for chunk_index, chunk_payload in enumerate(chunk_payloads):
+                    self.log(f"Call B processing chunk {chunk_index + 1}/{total_chunks}...")
+                    chunk_result = self._call_openai_midi_editor(
+                        api_key,
+                        prompt_text,
+                        chunk_payload,
+                        chunk_index=chunk_index,
+                        chunk_count=total_chunks,
+                    )
+                    if chunk_index == 0:
+                        merged_type = int(chunk_result.get("type", merged_type))
+                        merged_tpb = int(chunk_result.get("ticks_per_beat", merged_tpb))
+                    chunk_tracks = chunk_result.get("tracks") if isinstance(chunk_result, dict) else None
+                    if not isinstance(chunk_tracks, list):
+                        raise RuntimeError(f"Chunk {chunk_index + 1} did not return a valid 'tracks' list.")
+                    merged_tracks.extend(chunk_tracks)
+
+                midi_output_payload = {
+                    "type": merged_type,
+                    "ticks_per_beat": merged_tpb,
+                    "tracks": merged_tracks,
+                }
+                self._validate_midi_payload(midi_output_payload)
+            else:
+                self.log(f"Call B ({OPENAI_MODEL_MIDI}) processing mode: single payload.")
+                midi_output_payload = self._call_openai_midi_editor(api_key, prompt_text, midi_text_payload)
 
             os.makedirs(MIDI_OUTPUT_DIR, exist_ok=True)
             base_name = os.path.splitext(os.path.basename(file_path))[0]
