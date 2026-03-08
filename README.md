@@ -1,82 +1,124 @@
-# Music Clipboard with AI
+# Music Clipboard
 
-Cross-platform tooling for extracting pitch names and metric positions from MuseScore files (`.mscx`/`.mscz`) or MIDI data, then handing results into AI-assisted music editing workflows.
+Music Clipboard with (optional) AI integration helps you capture, transfer, and edit music regions within or across DAWs/notation software. The program supports extraction optimized for cross-DAW transfer and translates music to text for language models.
 
-## Canonical layout
+Music Clipboard was built with both technical and non-technical musicians in mind, after the setup below the GUI requires *no coding or terminal usage.*
 
-```text
-music_clipboard_ai/
-  src/music_clipboard/
-    gui/app.py
-    extract/{midi.py,pitches.py,pitches_with_position.py}
-    automation/hotkey_listener.py
-    platform/runtime.py
-    integrations/musescore_mcp/
-  scripts/
-    macos/{run_gui.sh,run_hotkey_listener.sh}
-    windows/{run_gui.bat,run_hotkey_listener.bat,run_gui.sh}
-  data/outputs/{text,midi}
-  requirements.txt
-```
+Currently up for **macOS**, Windows version is being updated.
 
-## Transitional compatibility (Phase 1)
+## Quickstart
 
-Legacy launchers and wrappers under `clipboard-full/MAC` and `clipboard-full/WIN` are still present.
-They print deprecation warnings and forward to the new module paths.
-
-## Run
-
-Preferred:
+Run these commands from the repository root (`music_clipboard_ai/`).
 
 ```bash
-python -m music_clipboard.gui.app
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-Or use canonical launchers:
+Launch the GUI:
 
 ```bash
 scripts/macos/run_gui.sh
-scripts/windows/run_gui.bat
+```
+
+Or launch directly with Python (cross-platform):
+
+```bash
+PYTHONPATH="$(pwd)/src:$(pwd)" python3 -m music_clipboard.gui.app
+```
+
+Start the global hotkey listener:
+
+```bash
+scripts/macos/run_hotkey_listener.sh
+```
+
+Or launch directly with Python:
+
+```bash
+PYTHONPATH="$(pwd)/src:$(pwd)" python3 -m music_clipboard.automation.hotkey_listener
+```
+
+## Platform Commands
+
+### macOS
+
+GUI launcher:
+
+```bash
+scripts/macos/run_gui.sh
 ```
 
 Hotkey listener:
 
 ```bash
+scripts/macos/run_hotkey_listener.sh
+```
+
+### Windows
+
+GUI launcher:
+
+```bash
+scripts\\windows\\run_gui.bat
+```
+
+Hotkey listener:
+
+```bash
+scripts\\windows\\run_hotkey_listener.bat
+```
+
+Python module alternatives (PowerShell):
+
+```bash
+$env:PYTHONPATH = "$PWD\\src;$PWD"
+python -m music_clipboard.gui.app
 python -m music_clipboard.automation.hotkey_listener
 ```
 
-## Output locations
+## Outputs
 
-- New write targets:
-  - `data/outputs/text`
-  - `data/outputs/midi`
-- Legacy fallback directories still recognized during transition:
-  - `clipboard-full/txts`
-  - `clipboard-full/midis`
+Generated files are written to:
 
-## Dependencies
+- `data/outputs/text` for extracted pitch text files
+- `data/outputs/midi` for exported MIDI files
 
-Install from root:
+During transition, legacy output folders may still be read if present:
 
-```bash
-pip install -r requirements.txt
-```
+- `clipboard-full/txts`
+- `clipboard-full/midis`
 
-## MuseScore MCP integration
+## Feature Reference
 
-Location:
+- **AI-integrated workflow:** copy/export extracted musical material into AI editing flows from the GUI
+    - Supports editing within cross-DAW transfer
+- Hotkey automation: global shortcut listener to trigger save-selection workflows
+- Inputs: MuseScore `.mscx` and `.mscz` scores (plus MIDI handling in app workflows)
+- Pitch extraction: note names from score content (for example `C4`, `F#5`)
+- Position-aware extraction: note names with measure/beat locations (for example `M12:3.50`)
+- MIDI export: MIDI generation from MuseScore scores
+
+## MuseScore MCP Integration
+
+This repository also includes a MuseScore MCP integration under:
 
 - `src/music_clipboard/integrations/musescore_mcp`
 
 Entry points:
 
-- `mcp_server.py`
-- `musescore_mcp_websocket.qml`
+- `src/music_clipboard/integrations/musescore_mcp/mcp_server.py`
+- `src/music_clipboard/integrations/musescore_mcp/musescore_mcp_websocket.qml`
 
-See integration docs at:
+For setup and usage, see:
 
 - `src/music_clipboard/integrations/musescore_mcp/README.md`
 
+## Legacy Compatibility
+
+`clipboard-full/MAC` and `clipboard-full/WIN` are legacy transitional wrappers. They remain in the repo for compatibility, but new usage should prefer `src/music_clipboard` modules and `scripts/macos` / `scripts/windows` launchers.
+
 ## Acknowledgements
 
-The MuseScore MCP integration in this codebase was originally based on [ghchen99/mcp-musescore](https://github.com/ghchen99/mcp-musescore) and integrated/modified in this repository.
+The MuseScore MCP integration in this codebase was originally based on [ghchen99/mcp-musescore](https://github.com/ghchen99/mcp-musescore) and then integrated and modified in this repository.
