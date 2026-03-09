@@ -16,6 +16,50 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Electron + FastAPI App (New)
+
+The new desktop app lives at:
+
+- `src/music_clipboard/electron_ui/app` (Electron Forge + React + TypeScript)
+- `src/music_clipboard/electron_ui/backend` (FastAPI local backend)
+
+### Run the desktop app in development
+
+From repository root:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+cd src/music_clipboard/electron_ui/app
+npm install
+npm start
+```
+
+The Electron main process will start the local FastAPI backend automatically on `127.0.0.1` with an ephemeral port and token.
+
+### Package the desktop app
+
+From `src/music_clipboard/electron_ui/app`:
+
+```bash
+source ../../../../venv/bin/activate
+pip install pyinstaller
+npm run bundle:backend
+npm run package
+```
+
+`bundle:backend` produces a bundled backend executable in `backend-dist/`, and Forge packages it as an app resource.
+
+### Backend API (v1)
+
+- `GET /api/v1/health`
+- `POST /api/v1/extract`
+- `POST /api/v1/midi/export`
+- `POST /api/v1/ai/openai/edit-midi`
+- `GET /api/v1/jobs/{job_id}`
+- `GET /api/v1/jobs/{job_id}/events` (SSE)
+
 Launch the GUI:
 
 ```bash

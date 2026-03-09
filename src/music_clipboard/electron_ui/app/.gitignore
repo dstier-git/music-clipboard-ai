@@ -90,3 +90,8 @@ typings/
 
 # Electron-Forge
 out/
+
+# Local backend bundling artifacts
+.pyinstaller/
+backend-dist/*
+!backend-dist/.gitkeep
