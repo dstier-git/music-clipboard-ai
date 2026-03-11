@@ -214,6 +214,11 @@ button.primary:disabled {
   color: var(--muted);
 }
 
+.message-body {
+  display: grid;
+  gap: 10px;
+}
+
 .message pre {
   margin: 0;
   white-space: pre-wrap;
@@ -221,6 +226,69 @@ button.primary:disabled {
   font-family: 'Menlo', 'Consolas', monospace;
   font-size: 0.85rem;
   line-height: 1.45;
+}
+
+.message-file {
+  display: grid;
+  gap: 6px;
+}
+
+.file-chip {
+  display: grid;
+  gap: 3px;
+  justify-items: start;
+  text-align: left;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.92);
+  padding: 10px 12px;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-drag: element;
+}
+
+.file-chip:active {
+  cursor: grabbing;
+}
+
+.file-chip-name {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--ink);
+}
+
+.file-chip-hint {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.file-chip-midi {
+  border-color: rgba(15, 124, 62, 0.38);
+  background: rgba(230, 248, 236, 0.9);
+}
+
+.file-chip-text {
+  border-color: rgba(15, 108, 143, 0.34);
+  background: rgba(224, 244, 252, 0.92);
+}
+
+.file-chip-file {
+  border-color: rgba(35, 62, 122, 0.28);
+  background: rgba(225, 233, 250, 0.84);
+}
+
+.file-chip.is-disabled,
+.file-chip:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.file-path {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  word-break: break-all;
+  font-family: 'Menlo', 'Consolas', monospace;
 }
 
 .message-user {

@@ -1,12 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 
 type ActionType = 'extract' | 'midi-export' | 'openai-edit';
 type TabType = 'chat' | 'settings';
+type ChatAttachmentKind = 'midi' | 'text' | 'file';
+
+type ChatAttachment = {
+  filePath: string;
+  fileName: string;
+  kind: ChatAttachmentKind;
+};
 
 type ChatMessage = {
   id: string;
   role: 'system' | 'user' | 'assistant';
   text: string;
+  attachment?: ChatAttachment;
 };
 
 type BackendStatus = {
@@ -34,11 +42,16 @@ const ACTION_LABELS: Record<ActionType, string> = {
   'openai-edit': 'OpenAI MIDI Edit',
 };
 
-function createMessage(role: ChatMessage['role'], text: string): ChatMessage {
+function createMessage(
+  role: ChatMessage['role'],
+  text: string,
+  attachment?: ChatAttachment,
+): ChatMessage {
   return {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     role,
     text,
+    attachment,
   };
 }
 
@@ -53,9 +66,45 @@ function formatResult(result: unknown): string {
   }
 }
 
+function getFileName(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/');
+  const segments = normalized.split('/');
+  return segments[segments.length - 1] || filePath;
+}
+
+function getAttachmentKind(fileName: string): ChatAttachmentKind {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith('.mid') || lower.endsWith('.midi')) {
+    return 'midi';
+  }
+  if (lower.endsWith('.txt')) {
+    return 'text';
+  }
+  return 'file';
+}
+
+function getOutputAttachment(result: unknown): ChatAttachment | undefined {
+  if (!result || typeof result !== 'object') {
+    return undefined;
+  }
+
+  const outputPath = (result as { output_path?: unknown }).output_path;
+  if (typeof outputPath !== 'string' || !outputPath.trim()) {
+    return undefined;
+  }
+
+  const filePath = outputPath.trim();
+  const fileName = getFileName(filePath);
+  return {
+    filePath,
+    fileName,
+    kind: getAttachmentKind(fileName),
+  };
+}
+
 export function App() {
   const [activeTab, setActiveTab] = useState<TabType>('chat');
-  const [action, setAction] = useState<ActionType>('extract');
+  const [action, setAction] = useState<ActionType>('openai-edit');
   const [filePath, setFilePath] = useState('');
   const [instructions, setInstructions] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -74,8 +123,8 @@ export function App() {
 
   const selectedActionLabel = useMemo(() => ACTION_LABELS[action], [action]);
 
-  const addMessage = (role: ChatMessage['role'], text: string) => {
-    setMessages((prev) => [...prev, createMessage(role, text)]);
+  const addMessage = (role: ChatMessage['role'], text: string, attachment?: ChatAttachment) => {
+    setMessages((prev) => [...prev, createMessage(role, text, attachment)]);
   };
 
   const refreshStatus = async () => {
@@ -119,6 +168,24 @@ export function App() {
     }
   };
 
+  const handleAttachmentDragStart = (event: DragEvent<HTMLButtonElement>, attachment: ChatAttachment) => {
+    const filePath = attachment.filePath.trim();
+    if (!filePath) {
+      event.preventDefault();
+      return;
+    }
+
+    // Hide the browser's default ghost image so Electron's native drag icon shows instead.
+    // Do NOT call preventDefault() here — that would kill the drag session before
+    // event.sender.startDrag() in the main process can latch onto it.
+    const ghostImage = new Image();
+    event.dataTransfer.setDragImage(ghostImage, 0, 0);
+    event.dataTransfer.effectAllowed = 'copy';
+
+    // Delegate file drag to the Electron main process for OS-level drag-and-drop.
+    window.musicClipboard.files.startDrag(filePath);
+  };
+
   const runAction = async () => {
     if (!filePath.trim()) {
       addMessage('system', 'Pick a source file first.');
@@ -153,7 +220,9 @@ export function App() {
       const jobId = data.job_id;
       addMessage('assistant', `Job queued: ${jobId}`);
 
-      const unsubscribe = await window.musicClipboard.jobs.subscribe(jobId, (event: JobEvent) => {
+      let unsubscribe: () => void = () => undefined;
+
+      unsubscribe = await window.musicClipboard.jobs.subscribe(jobId, (event: JobEvent) => {
         if (event.type === 'log' && event.message) {
           addMessage('assistant', event.message);
           return;
@@ -167,11 +236,16 @@ export function App() {
           return;
         }
         if (event.type === 'done') {
-          addMessage('assistant', `Completed:\n${formatResult(event.result)}`);
+          const attachment = getOutputAttachment(event.result);
+          const completionText = attachment ? 'Completed.' : `Completed:\n${formatResult(event.result)}`;
+          addMessage('assistant', completionText, attachment);
+          unsubscribe();
           return;
         }
         if (event.type === 'error') {
+          console.error(`[job:${jobId}] Failed:`, event.error);
           addMessage('assistant', `Failed: ${event.error || 'Unknown error'}`);
+          unsubscribe();
         }
       });
 
@@ -225,9 +299,9 @@ export function App() {
             <label>
               Action
               <select value={action} onChange={(event) => setAction(event.target.value as ActionType)}>
+                <option value="openai-edit">OpenAI MIDI Edit</option>
                 <option value="extract">Extract Pitch Text</option>
                 <option value="midi-export">Export MIDI</option>
-                <option value="openai-edit">OpenAI MIDI Edit</option>
               </select>
             </label>
 
@@ -257,12 +331,33 @@ export function App() {
           <section className="chat-panel">
             <h2>Session</h2>
             <div className="message-list">
-              {messages.map((message) => (
-                <article key={message.id} className={`message message-${message.role}`}>
-                  <h3>{message.role}</h3>
-                  <pre>{message.text}</pre>
-                </article>
-              ))}
+              {messages.map((message) => {
+                const attachment = message.attachment;
+                const canDrag = Boolean(attachment?.filePath.trim());
+                return (
+                  <article key={message.id} className={`message message-${message.role}`}>
+                    <h3>{message.role}</h3>
+                    <div className="message-body">
+                      {message.text ? <pre>{message.text}</pre> : null}
+                      {attachment ? (
+                        <div className="message-file">
+                          <button
+                            type="button"
+                            className={`file-chip file-chip-${attachment.kind}${canDrag ? '' : ' is-disabled'}`}
+                            draggable={canDrag}
+                            disabled={!canDrag}
+                            onDragStart={canDrag ? (event) => handleAttachmentDragStart(event, attachment) : undefined}
+                          >
+                            <span className="file-chip-name">{attachment.fileName}</span>
+                            <span className="file-chip-hint">Drag to DAW or app</span>
+                          </button>
+                          <p className="file-path">{attachment.filePath}</p>
+                        </div>
+                      ) : null}
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           </section>
         </main>
