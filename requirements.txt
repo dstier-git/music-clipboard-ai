@@ -15,3 +15,14 @@ pywin32>=300; platform_system == "Windows"
 # Optional dependencies for MIDI export
 mido>=1.2.10
 # music21>=8.0.0  # Alternative for MIDI export
+
+# Electron local backend (FastAPI)
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+
+# Optional dependencies for OpenAI MIDI editing
+openai>=1.30.0
+
+# Test dependencies
+pytest>=8.0.0

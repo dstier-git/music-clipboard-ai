@@ -113,6 +113,7 @@ OPENAI_MODEL_CLASSIFIER = "gpt-5-nano"
 OPENAI_MODEL_SEMANTIC = "gpt-5.1"
 OPENAI_MODEL_MIDI = "gpt-5.2"
 OPENAI_MIDI_CHUNK_THRESHOLD_CHARS = 180000
+OPENAI_MAX_CALLS_PER_REQUEST = 3
 HOTKEY_MODIFIER_ORDER = ["cmd", "ctrl", "alt", "shift"]
 HOTKEY_MODIFIER_ALIASES = {
     "cmd": "cmd",
@@ -1139,7 +1140,22 @@ class MuseScoreExtractorApp:
         with urllib.request.urlopen(request, timeout=180) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def _openai_responses_call(self, api_key, model, content_items):
+    def _new_openai_call_budget(self):
+        return {"used": 0, "max": OPENAI_MAX_CALLS_PER_REQUEST}
+
+    def _consume_openai_call_budget(self, call_budget, model):
+        if call_budget is None:
+            return
+        if call_budget["used"] >= call_budget["max"]:
+            raise RuntimeError(
+                f"OpenAI call limit reached ({call_budget['max']} per request). "
+                "Request aborted before making additional API calls."
+            )
+        call_budget["used"] += 1
+        self.log(f"OpenAI API call {call_budget['used']}/{call_budget['max']} ({model}).")
+
+    def _openai_responses_call(self, api_key, model, content_items, call_budget=None):
+        self._consume_openai_call_budget(call_budget, model)
         payload = {
             "model": model,
             "input": [{"role": "user", "content": content_items}],
@@ -1199,7 +1215,7 @@ class MuseScoreExtractorApp:
         has_edit = any(token in prompt_lower for token in edit_indicators)
         return has_semantic, has_edit
 
-    def _run_openai_classifier_call(self, api_key, prompt_text):
+    def _run_openai_classifier_call(self, api_key, prompt_text, call_budget):
         content = [
             {
                 "type": "input_text",
@@ -1212,7 +1228,7 @@ class MuseScoreExtractorApp:
             },
             {"type": "input_text", "text": f"User prompt:\n{prompt_text.strip()}"},
         ]
-        response_json = self._openai_responses_call(api_key, OPENAI_MODEL_CLASSIFIER, content)
+        response_json = self._openai_responses_call(api_key, OPENAI_MODEL_CLASSIFIER, content, call_budget=call_budget)
         response_text = self._extract_text_from_openai_response(response_json)
         response_obj = self._extract_json_object_from_text(response_text)
         if not isinstance(response_obj, dict) or set(response_obj.keys()) != {"needs_semantic"}:
@@ -1222,7 +1238,7 @@ class MuseScoreExtractorApp:
             raise RuntimeError("Classifier 'needs_semantic' must be boolean.")
         return needs_semantic
 
-    def _run_openai_semantic_call(self, api_key, prompt_text, midi_payload):
+    def _run_openai_semantic_call(self, api_key, prompt_text, midi_payload, call_budget):
         content = [
             {
                 "type": "input_text",
@@ -1239,7 +1255,7 @@ class MuseScoreExtractorApp:
                 "text": "Input MIDI JSON for context:\n" + json.dumps(midi_payload, separators=(",", ":")),
             },
         ]
-        response_json = self._openai_responses_call(api_key, OPENAI_MODEL_SEMANTIC, content)
+        response_json = self._openai_responses_call(api_key, OPENAI_MODEL_SEMANTIC, content, call_budget=call_budget)
         return self._extract_text_from_openai_response(response_json)
 
     def _parse_semantic_response_text(self, response_text):
@@ -1337,17 +1353,10 @@ class MuseScoreExtractorApp:
             out_midi.tracks.append(track)
         out_midi.save(output_path)
 
-    def _build_openai_midi_edit_content(self, prompt_text, midi_payload, chunk_index=None, chunk_count=None, retry_error=None):
+    def _build_openai_midi_edit_content(self, prompt_text, midi_payload, chunk_index=None, chunk_count=None):
         chunk_text = "single payload"
         if chunk_index is not None and chunk_count is not None:
             chunk_text = f"chunk {chunk_index + 1} of {chunk_count}"
-
-        retry_text = ""
-        if retry_error:
-            retry_text = (
-                "\nThe previous response was invalid. Fix it and return strictly valid JSON. "
-                f"Previous validation error: {retry_error}"
-            )
 
         return [
             {
@@ -1359,7 +1368,7 @@ class MuseScoreExtractorApp:
                     "\"tracks\": [{\"name\": <string>, \"messages\": [<message dicts>]}]}}\n"
                     "Message dicts must be compatible with mido Message.from_dict / MetaMessage.from_dict.\n"
                     "Use non-negative integer delta-time field 'time'.\n"
-                    f"Current processing scope: {chunk_text}.{retry_text}\n"
+                    f"Current processing scope: {chunk_text}.\n"
                     "No markdown and no extra keys."
                 ),
             },
@@ -1367,44 +1376,28 @@ class MuseScoreExtractorApp:
             {"type": "input_text", "text": "Input MIDI JSON:\n" + json.dumps(midi_payload, separators=(",", ":"))},
         ]
 
-    def _call_openai_midi_editor(self, api_key, prompt_text, midi_payload, chunk_index=None, chunk_count=None):
-        last_error = ""
-        for attempt in range(2):
-            content = self._build_openai_midi_edit_content(
-                prompt_text,
-                midi_payload,
-                chunk_index=chunk_index,
-                chunk_count=chunk_count,
-                retry_error=last_error if attempt == 1 else None,
-            )
-            response_json = self._openai_responses_call(api_key, OPENAI_MODEL_MIDI, content)
-            response_text = self._extract_text_from_openai_response(response_json)
-            response_obj = self._extract_json_object_from_text(response_text)
-            if not response_obj:
-                last_error = "Response did not contain valid JSON."
-                if attempt == 0:
-                    self.log("Call B returned invalid payload; retrying once.")
-                continue
-            if set(response_obj.keys()) != {"midi_json"}:
-                last_error = "Response JSON must contain only top-level key 'midi_json'."
-                if attempt == 0:
-                    self.log("Call B returned invalid payload; retrying once.")
-                continue
-            midi_output_payload = response_obj.get("midi_json")
-            if not isinstance(midi_output_payload, dict):
-                last_error = "Response JSON did not include top-level 'midi_json'."
-                if attempt == 0:
-                    self.log("Call B returned invalid payload; retrying once.")
-                continue
-            try:
-                self._validate_midi_payload(midi_output_payload)
-                return midi_output_payload
-            except Exception as exc:
-                last_error = str(exc)
-                if attempt == 0:
-                    self.log("Call B returned invalid payload; retrying once.")
-                continue
-        raise RuntimeError(f"Call B failed: {last_error}")
+    def _call_openai_midi_editor(self, api_key, prompt_text, midi_payload, call_budget, chunk_index=None, chunk_count=None):
+        content = self._build_openai_midi_edit_content(
+            prompt_text,
+            midi_payload,
+            chunk_index=chunk_index,
+            chunk_count=chunk_count,
+        )
+        response_json = self._openai_responses_call(api_key, OPENAI_MODEL_MIDI, content, call_budget=call_budget)
+        response_text = self._extract_text_from_openai_response(response_json)
+        response_obj = self._extract_json_object_from_text(response_text)
+        if not response_obj:
+            raise RuntimeError("Call B failed: response did not contain valid JSON.")
+        if set(response_obj.keys()) != {"midi_json"}:
+            raise RuntimeError("Call B failed: response JSON must contain only top-level key 'midi_json'.")
+        midi_output_payload = response_obj.get("midi_json")
+        if not isinstance(midi_output_payload, dict):
+            raise RuntimeError("Call B failed: response JSON did not include top-level 'midi_json'.")
+        try:
+            self._validate_midi_payload(midi_output_payload)
+        except Exception as exc:
+            raise RuntimeError(f"Call B failed: {exc}") from exc
+        return midi_output_payload
 
     def _chunk_midi_payload_by_track(self, midi_payload, max_chars):
         tracks = midi_payload.get("tracks") or []
@@ -1448,12 +1441,14 @@ class MuseScoreExtractorApp:
             if not api_key:
                 raise RuntimeError("OPENAI_KEY was not found in environment or .env.")
 
+            call_budget = self._new_openai_call_budget()
             midi_input_path, temporary_input = self._ensure_midi_input_for_openai(file_path)
             self.log(f"Preparing OpenAI MIDI edit for: {os.path.basename(midi_input_path)}")
+            self.log(f"OpenAI call limit per request: {OPENAI_MAX_CALLS_PER_REQUEST}.")
             midi_text_payload = self._midi_to_text_payload(midi_input_path)
             has_edit = self._classify_prompt_for_semantic_and_edit_local(prompt_text)[1]
             try:
-                needs_semantic = self._run_openai_classifier_call(api_key, prompt_text)
+                needs_semantic = self._run_openai_classifier_call(api_key, prompt_text, call_budget)
                 self.log(
                     "Semantic gate: classifier "
                     f"({OPENAI_MODEL_CLASSIFIER}) -> {'run Call A' if needs_semantic else 'skip Call A'}."
@@ -1468,7 +1463,7 @@ class MuseScoreExtractorApp:
             if needs_semantic:
                 self.log(f"Running Call A (semantic) with {OPENAI_MODEL_SEMANTIC}.")
                 try:
-                    semantic_response = self._run_openai_semantic_call(api_key, prompt_text, midi_text_payload)
+                    semantic_response = self._run_openai_semantic_call(api_key, prompt_text, midi_text_payload, call_budget)
                     semantic_text = self._parse_semantic_response_text(semantic_response)
                     if semantic_text:
                         self.log("─" * 40)
@@ -1492,6 +1487,12 @@ class MuseScoreExtractorApp:
                     f"Call B ({OPENAI_MODEL_MIDI}) processing mode: chunked by track "
                     f"({len(chunk_payloads)} chunks, payload chars={serialized_len})."
                 )
+                remaining_calls = call_budget["max"] - call_budget["used"]
+                if len(chunk_payloads) > remaining_calls:
+                    raise RuntimeError(
+                        f"OpenAI call limit reached ({call_budget['max']} per request). "
+                        f"Call B requires {len(chunk_payloads)} chunk calls but only {remaining_calls} call slots remain."
+                    )
 
                 merged_tracks = []
                 merged_type = int(midi_text_payload.get("type", 1))
@@ -1503,6 +1504,7 @@ class MuseScoreExtractorApp:
                         api_key,
                         prompt_text,
                         chunk_payload,
+                        call_budget,
                         chunk_index=chunk_index,
                         chunk_count=total_chunks,
                     )
@@ -1523,7 +1525,7 @@ class MuseScoreExtractorApp:
                 self._validate_midi_payload(midi_output_payload)
             else:
                 self.log(f"Call B ({OPENAI_MODEL_MIDI}) processing mode: single payload.")
-                midi_output_payload = self._call_openai_midi_editor(api_key, prompt_text, midi_text_payload)
+                midi_output_payload = self._call_openai_midi_editor(api_key, prompt_text, midi_text_payload, call_budget)
                 self.log("Call B completed successfully.")
 
             os.makedirs(MIDI_OUTPUT_DIR, exist_ok=True)
