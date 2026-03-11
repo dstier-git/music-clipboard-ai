@@ -181,6 +181,14 @@ button.primary {
   font-weight: 700;
 }
 
+button.secondary {
+  width: 100%;
+  background: rgba(15, 108, 143, 0.1);
+  border-color: rgba(15, 108, 143, 0.34);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
 button.primary:disabled {
   cursor: not-allowed;
   opacity: 0.7;
@@ -320,6 +328,58 @@ button.primary:disabled {
   margin: 8px 0;
 }
 
+.settings-wide {
+  grid-column: 1 / -1;
+}
+
+.settings-help {
+  color: var(--muted);
+}
+
+.settings-notice {
+  color: #0f6c8f;
+  font-weight: 600;
+}
+
+.settings-error {
+  color: #8b1e3f;
+  font-weight: 600;
+}
+
+.hotkey-table {
+  display: grid;
+  grid-template-columns: 1.2fr 0.4fr 1fr 0.9fr 0.5fr;
+  gap: 8px;
+  align-items: center;
+}
+
+.hotkey-header {
+  font-size: 0.82rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.hotkey-cell {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+}
+
+.hotkey-cell input[type='checkbox'] {
+  width: 18px;
+  height: 18px;
+}
+
+.hotkey-cell input {
+  width: 100%;
+}
+
+.hotkey-cell.muted {
+  color: var(--muted);
+}
+
 .row-actions {
   margin-top: 14px;
   display: flex;
@@ -347,5 +407,14 @@ code {
   .chat-layout,
   .settings-layout {
     grid-template-columns: 1fr;
+  }
+
+  .hotkey-table {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .hotkey-header {
+    display: none;
   }
 }

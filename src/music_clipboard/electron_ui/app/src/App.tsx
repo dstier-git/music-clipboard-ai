@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 
 type ActionType = 'extract' | 'midi-export' | 'openai-edit';
 type TabType = 'chat' | 'settings';
@@ -17,12 +17,6 @@ type ChatMessage = {
   attachment?: ChatAttachment;
 };
 
-type BackendStatus = {
-  running: boolean;
-  port: number | null;
-  baseUrl: string | null;
-};
-
 type HealthPayload = {
   status: string;
   openai_key_set: boolean;
@@ -34,6 +28,67 @@ type JobEvent = {
   result?: unknown;
   error?: string;
   progress?: number;
+};
+
+type ProgramInfo = {
+  program_id: string;
+  label: string;
+};
+
+type HotkeyDefault = {
+  normalized: string;
+  label: string;
+};
+
+type GlobalHotkeyStatus = {
+  global_hotkey: string;
+  global_hotkey_label: string;
+  selected_program?: string;
+  registered: boolean;
+  available: boolean;
+  provider: string | null;
+  error: string | null;
+  request_monitor_running: boolean;
+  request_file: string;
+  last_trigger_source: string | null;
+  last_trigger_at: string | null;
+  last_trigger_result: {
+    ok: boolean;
+    code: string;
+    message: string;
+  } | null;
+};
+
+type HotkeySettingsPayload = {
+  selected_program: string;
+  visible_programs: string[];
+  custom_hotkeys: Record<string, string>;
+  default_hotkeys_by_program: Record<string, HotkeyDefault>;
+  effective_hotkey: string | null;
+  effective_hotkey_label: string;
+  effective_hotkey_error: string | null;
+  global_hotkey: string;
+  program_order: string[];
+  program_labels: Record<string, string>;
+  programs: ProgramInfo[];
+  global_hotkey_status: GlobalHotkeyStatus;
+};
+
+type TriggerSaveSelectionResult = {
+  ok: boolean;
+  code: string;
+  message: string;
+  logs: string[];
+  program_id?: string;
+  program_label?: string;
+  effective_hotkey?: string;
+  effective_hotkey_label?: string;
+};
+
+type HotkeySettingsDraft = {
+  selectedProgram: string;
+  visiblePrograms: string[];
+  customHotkeys: Record<string, string>;
 };
 
 const ACTION_LABELS: Record<ActionType, string> = {
@@ -102,6 +157,14 @@ function getOutputAttachment(result: unknown): ChatAttachment | undefined {
   };
 }
 
+function toSettingsDraft(settings: HotkeySettingsPayload): HotkeySettingsDraft {
+  return {
+    selectedProgram: settings.selected_program,
+    visiblePrograms: [...settings.visible_programs],
+    customHotkeys: { ...settings.custom_hotkeys },
+  };
+}
+
 export function App() {
   const [activeTab, setActiveTab] = useState<TabType>('chat');
   const [action, setAction] = useState<ActionType>('openai-edit');
@@ -118,6 +181,12 @@ export function App() {
   });
   const [health, setHealth] = useState<HealthPayload | null>(null);
   const [platform, setPlatform] = useState('unknown');
+
+  const [hotkeySettings, setHotkeySettings] = useState<HotkeySettingsPayload | null>(null);
+  const [hotkeyDraft, setHotkeyDraft] = useState<HotkeySettingsDraft | null>(null);
+  const [isSavingHotkeys, setIsSavingHotkeys] = useState(false);
+  const [isTriggeringSaveSelection, setIsTriggeringSaveSelection] = useState(false);
+  const [settingsNotice, setSettingsNotice] = useState('');
 
   const subscriptionsRef = useRef<Array<() => void>>([]);
 
@@ -141,6 +210,21 @@ export function App() {
     }
   };
 
+  const refreshHotkeySettings = async ({ syncDraft = false }: { syncDraft?: boolean } = {}) => {
+    try {
+      const response = await window.musicClipboard.hotkeys.getSettings();
+      const payload = response.data as HotkeySettingsPayload;
+      setHotkeySettings(payload);
+      if (syncDraft || hotkeyDraft === null) {
+        setHotkeyDraft(toSettingsDraft(payload));
+      }
+      return payload;
+    } catch (error) {
+      addMessage('system', `Failed to load hotkey settings: ${String(error)}`);
+      return null;
+    }
+  };
+
   useEffect(() => {
     void (async () => {
       try {
@@ -148,6 +232,7 @@ export function App() {
         setBackendStatus(status);
         setPlatform(await window.musicClipboard.app.getPlatform());
         await refreshHealth();
+        await refreshHotkeySettings({ syncDraft: true });
       } catch (error) {
         addMessage('system', `Backend startup failed: ${String(error)}`);
       }
@@ -159,6 +244,7 @@ export function App() {
       }
       subscriptionsRef.current = [];
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const pickFile = async () => {
@@ -169,21 +255,17 @@ export function App() {
   };
 
   const handleAttachmentDragStart = (event: DragEvent<HTMLButtonElement>, attachment: ChatAttachment) => {
-    const filePath = attachment.filePath.trim();
-    if (!filePath) {
+    const dragFilePath = attachment.filePath.trim();
+    if (!dragFilePath) {
       event.preventDefault();
       return;
     }
 
-    // Hide the browser's default ghost image so Electron's native drag icon shows instead.
-    // Do NOT call preventDefault() here — that would kill the drag session before
-    // event.sender.startDrag() in the main process can latch onto it.
     const ghostImage = new Image();
     event.dataTransfer.setDragImage(ghostImage, 0, 0);
     event.dataTransfer.effectAllowed = 'copy';
 
-    // Delegate file drag to the Electron main process for OS-level drag-and-drop.
-    window.musicClipboard.files.startDrag(filePath);
+    window.musicClipboard.files.startDrag(dragFilePath);
   };
 
   const runAction = async () => {
@@ -213,7 +295,11 @@ export function App() {
         };
       }
 
-      addMessage('user', `${selectedActionLabel}\n${filePath.trim()}${action === 'openai-edit' ? `\n${instructions.trim()}` : ''}`);
+      const targetProgramLabel = hotkeySettings?.program_labels[hotkeySettings.selected_program] || 'Target App';
+      addMessage(
+        'user',
+        `${selectedActionLabel}\n${filePath.trim()}\nTarget: ${targetProgramLabel}${action === 'openai-edit' ? `\n${instructions.trim()}` : ''}`,
+      );
 
       const response = await window.musicClipboard.api.request('POST', endpoint, payload);
       const data = response.data as { job_id: string };
@@ -243,7 +329,6 @@ export function App() {
           return;
         }
         if (event.type === 'error') {
-          console.error(`[job:${jobId}] Failed:`, event.error);
           addMessage('assistant', `Failed: ${event.error || 'Unknown error'}`);
           unsubscribe();
         }
@@ -259,6 +344,31 @@ export function App() {
     }
   };
 
+  const triggerSaveSelection = async () => {
+    if (!hotkeySettings) {
+      addMessage('system', 'Hotkey settings are not loaded yet.');
+      return;
+    }
+
+    setIsTriggeringSaveSelection(true);
+    try {
+      const response = await window.musicClipboard.hotkeys.triggerSaveSelection(hotkeySettings.selected_program);
+      const result = response.data as TriggerSaveSelectionResult;
+      addMessage('assistant', result.message || 'Triggered save/export.');
+      if (Array.isArray(result.logs)) {
+        for (const entry of result.logs) {
+          addMessage('assistant', entry);
+        }
+      }
+    } catch (error: unknown) {
+      const text = String(error);
+      addMessage('assistant', `Save/export trigger failed: ${text}`);
+    } finally {
+      await refreshHotkeySettings();
+      setIsTriggeringSaveSelection(false);
+    }
+  };
+
   const stopBackend = async () => {
     await window.musicClipboard.backend.stop();
     await refreshStatus();
@@ -268,7 +378,111 @@ export function App() {
     await window.musicClipboard.backend.start();
     await refreshStatus();
     await refreshHealth();
+    await refreshHotkeySettings();
   };
+
+  const updateSelectedProgram = async (selectedProgram: string) => {
+    if (!hotkeySettings) {
+      return;
+    }
+
+    try {
+      const response = await window.musicClipboard.hotkeys.updateSettings({ selected_program: selectedProgram });
+      const payload = response.data as HotkeySettingsPayload;
+      setHotkeySettings(payload);
+      setHotkeyDraft((current) => ({
+        selectedProgram: payload.selected_program,
+        visiblePrograms: [...(current?.visiblePrograms || payload.visible_programs)],
+        customHotkeys: { ...(current?.customHotkeys || payload.custom_hotkeys) },
+      }));
+      setSettingsNotice('Target app updated.');
+    } catch (error) {
+      addMessage('system', `Failed to update target app: ${String(error)}`);
+    }
+  };
+
+  const toggleProgramVisibility = (programId: string) => {
+    setHotkeyDraft((current) => {
+      if (!current) {
+        return current;
+      }
+      const currentlyVisible = current.visiblePrograms.includes(programId);
+      const nextVisible = currentlyVisible
+        ? current.visiblePrograms.filter((item) => item !== programId)
+        : [...current.visiblePrograms, programId];
+
+      return {
+        ...current,
+        visiblePrograms: nextVisible,
+      };
+    });
+  };
+
+  const updateCustomHotkeyDraft = (programId: string, value: string) => {
+    setHotkeyDraft((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        customHotkeys: {
+          ...current.customHotkeys,
+          [programId]: value,
+        },
+      };
+    });
+  };
+
+  const resetCustomHotkeyDraft = (programId: string) => {
+    updateCustomHotkeyDraft(programId, '');
+  };
+
+  const saveHotkeySettings = async () => {
+    if (!hotkeyDraft) {
+      return;
+    }
+
+    setIsSavingHotkeys(true);
+    setSettingsNotice('');
+
+    try {
+      const selectedProgram = hotkeyDraft.visiblePrograms.includes(hotkeyDraft.selectedProgram)
+        ? hotkeyDraft.selectedProgram
+        : (hotkeyDraft.visiblePrograms[0] || hotkeyDraft.selectedProgram);
+
+      const response = await window.musicClipboard.hotkeys.updateSettings({
+        selected_program: selectedProgram,
+        visible_programs: hotkeyDraft.visiblePrograms,
+        custom_hotkeys: hotkeyDraft.customHotkeys,
+      });
+      const payload = response.data as HotkeySettingsPayload;
+      setHotkeySettings(payload);
+      setHotkeyDraft(toSettingsDraft(payload));
+      setSettingsNotice('Settings saved.');
+      addMessage('assistant', 'Program visibility and custom hotkeys saved.');
+    } catch (error) {
+      setSettingsNotice(`Failed to save settings: ${String(error)}`);
+      addMessage('system', `Failed to save hotkey settings: ${String(error)}`);
+    } finally {
+      setIsSavingHotkeys(false);
+    }
+  };
+
+  const reloadGlobalHotkey = async () => {
+    try {
+      await window.musicClipboard.hotkeys.reloadGlobal();
+      await refreshHotkeySettings();
+      setSettingsNotice('Global hotkey registration reloaded.');
+    } catch (error) {
+      setSettingsNotice(`Failed to reload global hotkey: ${String(error)}`);
+      addMessage('system', `Failed to reload global hotkey: ${String(error)}`);
+    }
+  };
+
+  const visibleProgramIds = hotkeySettings?.visible_programs || hotkeySettings?.program_order || [];
+  const selectedProgramLabel = hotkeySettings
+    ? hotkeySettings.program_labels[hotkeySettings.selected_program] || hotkeySettings.selected_program
+    : 'Target App';
 
   return (
     <div className="app-shell">
@@ -304,6 +518,32 @@ export function App() {
                 <option value="midi-export">Export MIDI</option>
               </select>
             </label>
+
+            <label>
+              Target App
+              <select
+                value={hotkeySettings?.selected_program || ''}
+                onChange={(event) => void updateSelectedProgram(event.target.value)}
+                disabled={!hotkeySettings}
+              >
+                {visibleProgramIds.map((programId) => (
+                  <option key={programId} value={programId}>
+                    {hotkeySettings?.program_labels[programId] || programId}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <button
+              className="secondary"
+              type="button"
+              onClick={triggerSaveSelection}
+              disabled={!hotkeySettings || isTriggeringSaveSelection}
+            >
+              {isTriggeringSaveSelection
+                ? 'Triggering...'
+                : `Trigger Save/Export in ${selectedProgramLabel}`}
+            </button>
 
             <label>
               Source File
@@ -387,6 +627,88 @@ export function App() {
             </p>
             <div className="row-actions">
               <button type="button" onClick={refreshHealth}>Run Health Check</button>
+            </div>
+          </section>
+
+          <section className="settings-card settings-wide">
+            <h2>Program Visibility & Hotkeys</h2>
+            <p className="settings-help">
+              Control which target apps appear in Run Action and override save/export shortcuts per app.
+              Leave custom hotkey blank to use platform default.
+            </p>
+
+            {!hotkeySettings || !hotkeyDraft ? (
+              <p>Loading settings...</p>
+            ) : (
+              <>
+                <div className="hotkey-table">
+                  <div className="hotkey-header">Program</div>
+                  <div className="hotkey-header">Show</div>
+                  <div className="hotkey-header">Custom Hotkey</div>
+                  <div className="hotkey-header">Default</div>
+                  <div className="hotkey-header">Action</div>
+
+                  {hotkeySettings.program_order.map((programId) => (
+                    <Fragment key={programId}>
+                      <div className="hotkey-cell">{hotkeySettings.program_labels[programId] || programId}</div>
+                      <div className="hotkey-cell">
+                        <input
+                          type="checkbox"
+                          checked={hotkeyDraft.visiblePrograms.includes(programId)}
+                          onChange={() => toggleProgramVisibility(programId)}
+                        />
+                      </div>
+                      <div className="hotkey-cell">
+                        <input
+                          value={hotkeyDraft.customHotkeys[programId] || ''}
+                          onChange={(event) => updateCustomHotkeyDraft(programId, event.target.value)}
+                          placeholder="e.g. cmd+shift+s"
+                        />
+                      </div>
+                      <div className="hotkey-cell muted">
+                        {hotkeySettings.default_hotkeys_by_program[programId]?.label || 'No default'}
+                      </div>
+                      <div className="hotkey-cell">
+                        <button type="button" onClick={() => resetCustomHotkeyDraft(programId)}>Reset</button>
+                      </div>
+                    </Fragment>
+                  ))}
+                </div>
+
+                <div className="row-actions">
+                  <button type="button" onClick={saveHotkeySettings} disabled={isSavingHotkeys}>
+                    {isSavingHotkeys ? 'Saving...' : 'Save Settings'}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {settingsNotice ? <p className="settings-notice">{settingsNotice}</p> : null}
+          </section>
+
+          <section className="settings-card settings-wide">
+            <h2>Global Hotkey Status</h2>
+            <p>
+              Global hotkey: <strong>{hotkeySettings?.global_hotkey_status.global_hotkey_label || hotkeySettings?.global_hotkey || 'Unknown'}</strong>
+            </p>
+            <p>
+              Registered: <strong>{hotkeySettings?.global_hotkey_status.registered ? 'Yes' : 'No'}</strong>
+              {' · '}
+              Provider: <strong>{hotkeySettings?.global_hotkey_status.provider || 'n/a'}</strong>
+              {' · '}
+              Request monitor: <strong>{hotkeySettings?.global_hotkey_status.request_monitor_running ? 'Running' : 'Stopped'}</strong>
+            </p>
+            <p>
+              Last trigger: <strong>{hotkeySettings?.global_hotkey_status.last_trigger_at || 'Never'}</strong>
+              {' · '}
+              Source: <strong>{hotkeySettings?.global_hotkey_status.last_trigger_source || 'n/a'}</strong>
+            </p>
+            {hotkeySettings?.global_hotkey_status.error ? (
+              <p className="settings-error">{hotkeySettings.global_hotkey_status.error}</p>
+            ) : null}
+            <div className="row-actions">
+              <button type="button" onClick={reloadGlobalHotkey}>Reload Global Hotkey</button>
+              <button type="button" onClick={() => void refreshHotkeySettings()}>Refresh Status</button>
             </div>
           </section>
         </main>
