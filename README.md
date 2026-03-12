@@ -16,6 +16,19 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Minimal Setup for `electron_ui`
+
+If you only want to run the Electron UI, from the repository root:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+cd src/music_clipboard/electron_ui/app
+npm install
+npm start
+```
+
 ## Electron + FastAPI App (New)
 
 The new desktop app lives at:
