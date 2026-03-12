@@ -74,6 +74,29 @@ type HotkeySettingsPayload = {
   global_hotkey_status: GlobalHotkeyStatus;
 };
 
+type WatchSettingsPayload = {
+  watch_folder: string;
+  watching_requested: boolean;
+  watching_active: boolean;
+  output_format: 'text' | 'midi' | string;
+  status: string;
+  last_error: string | null;
+};
+
+type WatchEvent = {
+  type: string;
+  message?: string;
+  status?: string;
+  watch_folder?: string;
+  source_path?: string;
+  destination_path?: string;
+  output_format?: 'text' | 'midi' | string;
+  conflict_id?: string;
+  destination_dir?: string;
+  expected_extension?: string;
+  conflicting_files?: string[];
+};
+
 type TriggerSaveSelectionResult = {
   ok: boolean;
   code: string;
@@ -188,12 +211,24 @@ export function App() {
   const [isTriggeringSaveSelection, setIsTriggeringSaveSelection] = useState(false);
   const [settingsNotice, setSettingsNotice] = useState('');
 
+  const [watchSettings, setWatchSettings] = useState<WatchSettingsPayload | null>(null);
+  const [watchOutputFormat, setWatchOutputFormat] = useState<'text' | 'midi'>('text');
+  const [watchLogs, setWatchLogs] = useState<string[]>([]);
+  const [isWatchBusy, setIsWatchBusy] = useState(false);
+
   const subscriptionsRef = useRef<Array<() => void>>([]);
 
   const selectedActionLabel = useMemo(() => ACTION_LABELS[action], [action]);
 
   const addMessage = (role: ChatMessage['role'], text: string, attachment?: ChatAttachment) => {
     setMessages((prev) => [...prev, createMessage(role, text, attachment)]);
+  };
+
+  const pushWatchLog = (line: string) => {
+    setWatchLogs((current) => {
+      const next = [...current, line];
+      return next.slice(-10);
+    });
   };
 
   const refreshStatus = async () => {
@@ -225,6 +260,106 @@ export function App() {
     }
   };
 
+  const refreshWatchSettings = async () => {
+    try {
+      const response = await window.musicClipboard.watch.getSettings();
+      const payload = response.data as WatchSettingsPayload;
+      setWatchSettings(payload);
+      const format = payload.output_format === 'midi' ? 'midi' : 'text';
+      setWatchOutputFormat(format);
+      return payload;
+    } catch (error) {
+      addMessage('system', `Failed to load watch settings: ${String(error)}`);
+      return null;
+    }
+  };
+
+  const resolveWatchConflict = async (event: WatchEvent) => {
+    if (!event.conflict_id) {
+      return;
+    }
+
+    const files = (event.conflicting_files || []).map((path) => getFileName(path));
+    const listPreview = files.length
+      ? files.slice(0, 8).map((name) => `- ${name}`).join('\n')
+      : '- Unknown files';
+    const promptText = [
+      `Output folder has files that are not ${event.expected_extension || 'the expected'} format.`,
+      '',
+      listPreview,
+      '',
+      'Clear destination folder and continue?',
+    ].join('\n');
+
+    const proceed = window.confirm(promptText);
+    try {
+      await window.musicClipboard.watch.resolveConflict(event.conflict_id, proceed);
+      pushWatchLog(proceed ? 'Conflict resolved: continuing move.' : 'Conflict resolved: skipped move.');
+    } catch (error) {
+      addMessage('system', `Failed to resolve watch conflict: ${String(error)}`);
+    }
+  };
+
+  const handleWatchEvent = (event: WatchEvent) => {
+    if (event.message) {
+      pushWatchLog(event.message);
+    }
+
+    if (event.type === 'status' && event.status) {
+      setWatchSettings((current) => {
+        if (!current) {
+          return current;
+        }
+        return {
+          ...current,
+          status: event.status || current.status,
+          watching_active: event.status === 'watching',
+        };
+      });
+      return;
+    }
+
+    if (event.type === 'watch_folder_updated') {
+      if (event.watch_folder) {
+        setWatchSettings((current) => {
+          if (!current) {
+            return current;
+          }
+          return {
+            ...current,
+            watch_folder: event.watch_folder || current.watch_folder,
+          };
+        });
+      }
+      void window.musicClipboard.app.bringToFront();
+      return;
+    }
+
+    if (event.type === 'artifact_processed') {
+      if (event.destination_path && event.destination_path.trim()) {
+        const attachment: ChatAttachment = {
+          filePath: event.destination_path,
+          fileName: getFileName(event.destination_path),
+          kind: getAttachmentKind(getFileName(event.destination_path)),
+        };
+        addMessage('assistant', 'Watch flow processed a new artifact.', attachment);
+      } else {
+        addMessage('assistant', 'Watch flow processed a new artifact.');
+      }
+      void window.musicClipboard.app.bringToFront();
+      return;
+    }
+
+    if (event.type === 'conflict_prompt') {
+      void resolveWatchConflict(event);
+      return;
+    }
+
+    if (event.type === 'error') {
+      addMessage('system', event.message || 'Watch runtime reported an error.');
+    }
+  };
+
   useEffect(() => {
     void (async () => {
       try {
@@ -233,6 +368,10 @@ export function App() {
         setPlatform(await window.musicClipboard.app.getPlatform());
         await refreshHealth();
         await refreshHotkeySettings({ syncDraft: true });
+        await refreshWatchSettings();
+
+        const watchUnsubscribe = await window.musicClipboard.watch.subscribe(handleWatchEvent);
+        subscriptionsRef.current.push(watchUnsubscribe);
       } catch (error) {
         addMessage('system', `Backend startup failed: ${String(error)}`);
       }
@@ -369,6 +508,62 @@ export function App() {
     }
   };
 
+  const pickWatchFolder = async () => {
+    const selected = await window.musicClipboard.files.pickFolder();
+    if (!selected) {
+      return;
+    }
+
+    setIsWatchBusy(true);
+    try {
+      const response = await window.musicClipboard.watch.updateSettings({ watch_folder: selected });
+      setWatchSettings(response.data as WatchSettingsPayload);
+      pushWatchLog(`Watch folder updated: ${selected}`);
+      void window.musicClipboard.app.bringToFront();
+    } catch (error) {
+      addMessage('system', `Failed to update watch folder: ${String(error)}`);
+    } finally {
+      setIsWatchBusy(false);
+    }
+  };
+
+  const updateWatchOutputFormat = async (nextFormat: 'text' | 'midi') => {
+    setWatchOutputFormat(nextFormat);
+    try {
+      const response = await window.musicClipboard.watch.updateSettings({ output_format: nextFormat });
+      setWatchSettings(response.data as WatchSettingsPayload);
+      pushWatchLog(`Output format set to ${nextFormat.toUpperCase()}.`);
+    } catch (error) {
+      addMessage('system', `Failed to update output format: ${String(error)}`);
+    }
+  };
+
+  const toggleWatch = async () => {
+    if (!watchSettings) {
+      addMessage('system', 'Watch settings are not loaded yet.');
+      return;
+    }
+
+    setIsWatchBusy(true);
+    try {
+      if (watchSettings.watching_active) {
+        const response = await window.musicClipboard.watch.stop();
+        const payload = response.data as WatchSettingsPayload;
+        setWatchSettings(payload);
+        pushWatchLog('Stopped watching.');
+      } else {
+        const response = await window.musicClipboard.watch.start(watchOutputFormat);
+        const payload = response.data as WatchSettingsPayload;
+        setWatchSettings(payload);
+        pushWatchLog(`Started watching: ${payload.watch_folder}`);
+      }
+    } catch (error) {
+      addMessage('system', `Failed to change watch state: ${String(error)}`);
+    } finally {
+      setIsWatchBusy(false);
+    }
+  };
+
   const stopBackend = async () => {
     await window.musicClipboard.backend.stop();
     await refreshStatus();
@@ -379,6 +574,7 @@ export function App() {
     await refreshStatus();
     await refreshHealth();
     await refreshHotkeySettings();
+    await refreshWatchSettings();
   };
 
   const updateSelectedProgram = async (selectedProgram: string) => {
@@ -483,6 +679,9 @@ export function App() {
   const selectedProgramLabel = hotkeySettings
     ? hotkeySettings.program_labels[hotkeySettings.selected_program] || hotkeySettings.selected_program
     : 'Target App';
+  const watchStatusLabel = watchSettings
+    ? `${watchSettings.watching_active ? 'Watching' : 'Not watching'} (${watchSettings.status})`
+    : 'Loading...';
 
   return (
     <div className="app-shell">
@@ -544,6 +743,57 @@ export function App() {
                 ? 'Triggering...'
                 : `Trigger Save/Export in ${selectedProgramLabel}`}
             </button>
+
+            <section className="watch-block">
+              <h3>Auto-Process Saved Selections</h3>
+
+              <label>
+                Watch Folder
+                <div className="file-row">
+                  <input
+                    value={watchSettings?.watch_folder || ''}
+                    readOnly
+                    placeholder="Choose watch folder"
+                  />
+                  <button type="button" onClick={pickWatchFolder} disabled={isWatchBusy}>
+                    Browse Folder
+                  </button>
+                </div>
+              </label>
+
+              <label>
+                Output Format
+                <select
+                  value={watchOutputFormat}
+                  onChange={(event) => void updateWatchOutputFormat(event.target.value as 'text' | 'midi')}
+                  disabled={isWatchBusy}
+                >
+                  <option value="text">Text</option>
+                  <option value="midi">MIDI</option>
+                </select>
+              </label>
+
+              <div className="row-actions compact-actions">
+                <button
+                  className="secondary"
+                  type="button"
+                  onClick={toggleWatch}
+                  disabled={!watchSettings || isWatchBusy}
+                >
+                  {watchSettings?.watching_active ? 'Stop Watching' : 'Start Watching'}
+                </button>
+              </div>
+
+              <p className="watch-status">Status: <strong>{watchStatusLabel}</strong></p>
+              {watchSettings?.last_error ? <p className="settings-error">{watchSettings.last_error}</p> : null}
+              {watchLogs.length > 0 ? (
+                <div className="watch-log-box">
+                  {watchLogs.map((line, index) => (
+                    <p key={`${line}-${index}`}>{line}</p>
+                  ))}
+                </div>
+              ) : null}
+            </section>
 
             <label>
               Source File
@@ -709,6 +959,27 @@ export function App() {
             <div className="row-actions">
               <button type="button" onClick={reloadGlobalHotkey}>Reload Global Hotkey</button>
               <button type="button" onClick={() => void refreshHotkeySettings()}>Refresh Status</button>
+            </div>
+          </section>
+
+          <section className="settings-card settings-wide">
+            <h2>Watch Diagnostics</h2>
+            <p>
+              Watch folder: <strong>{watchSettings?.watch_folder || 'n/a'}</strong>
+            </p>
+            <p>
+              Watching requested: <strong>{watchSettings?.watching_requested ? 'Yes' : 'No'}</strong>
+              {' · '}
+              Watching active: <strong>{watchSettings?.watching_active ? 'Yes' : 'No'}</strong>
+              {' · '}
+              Output format: <strong>{(watchSettings?.output_format || watchOutputFormat).toUpperCase()}</strong>
+            </p>
+            <p>
+              Runtime status: <strong>{watchSettings?.status || 'Unknown'}</strong>
+            </p>
+            {watchSettings?.last_error ? <p className="settings-error">{watchSettings.last_error}</p> : null}
+            <div className="row-actions">
+              <button type="button" onClick={() => void refreshWatchSettings()}>Refresh Watch Status</button>
             </div>
           </section>
         </main>

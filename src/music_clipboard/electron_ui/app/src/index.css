@@ -189,6 +189,51 @@ button.secondary {
   font-weight: 600;
 }
 
+.watch-block {
+  margin: 14px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(240, 247, 255, 0.72);
+}
+
+.watch-block h3 {
+  margin: 0 0 10px;
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent-strong);
+}
+
+.compact-actions {
+  margin-top: 0;
+}
+
+.watch-status {
+  margin: 10px 0 8px;
+  font-size: 0.9rem;
+}
+
+.watch-log-box {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.82);
+  max-height: 140px;
+  overflow: auto;
+  padding: 8px;
+}
+
+.watch-log-box p {
+  margin: 0 0 6px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-family: 'Menlo', 'Consolas', monospace;
+}
+
+.watch-log-box p:last-child {
+  margin-bottom: 0;
+}
+
 button.primary:disabled {
   cursor: not-allowed;
   opacity: 0.7;
